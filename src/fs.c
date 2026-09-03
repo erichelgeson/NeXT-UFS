@@ -1,4 +1,5 @@
 #include "nextufs.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -247,7 +248,7 @@ nufs_open(const char *path, const char *partspec, int rw, char *errbuf,
 	v->cgbuf = malloc((size_t)v->cgsize);
 	v->csum = malloc((size_t)v->cssize);
 	if (v->cgbuf == NULL || v->csum == NULL) {
-		nufs_err(v, "out of memory");
+		nufs_errc(v, ENOMEM, "out of memory");
 		goto fail;
 	}
 	if (nufs_pread(v, v->csum, nufs_fragoff(v, v->csaddr),

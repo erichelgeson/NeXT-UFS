@@ -1,4 +1,5 @@
 #include "nextufs.h"
+#include <errno.h>
 #include <stdarg.h>
 #include <string.h>
 
@@ -61,7 +62,7 @@ int
 nufs_pwrite(struct nufs *v, const void *buf, long long off, size_t n)
 {
 	if (!v->rw)
-		return nufs_err(v, "volume opened read-only"), -1;
+		return nufs_errc(v, EROFS, "volume opened read-only"), -1;
 	if (fseeko(v->f, (off_t)off, SEEK_SET) != 0)
 		return nufs_err(v, "seek to %lld failed", off), -1;
 	if (fwrite(buf, 1, n, v->f) != n)
@@ -74,6 +75,19 @@ nufs_err(struct nufs *v, const char *fmt, ...)
 {
 	va_list ap;
 
+	v->errnum = EIO;
+	va_start(ap, fmt);
+	vsnprintf(v->err, sizeof(v->err), fmt, ap);
+	va_end(ap);
+}
+
+/* As nufs_err, but records the errno a caller should report. */
+void
+nufs_errc(struct nufs *v, int errnum, const char *fmt, ...)
+{
+	va_list ap;
+
+	v->errnum = errnum;
 	va_start(ap, fmt);
 	vsnprintf(v->err, sizeof(v->err), fmt, ap);
 	va_end(ap);

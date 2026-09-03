@@ -1,4 +1,5 @@
 #include "nextufs.h"
+#include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -119,7 +120,7 @@ nufs_bmap(struct nufs *v, const struct nufs_dinode *dp, int lbn, int *frag)
 		lbn -= (int)span;
 	}
 	if (nlevels > NUFS_NIADDR) {
-		nufs_err(v, "logical block beyond triple indirect");
+		nufs_errc(v, EFBIG, "logical block beyond triple indirect");
 		return -1;
 	}
 	for (level = nlevels - 1, i = 0; level >= 0; level--, i++) {
@@ -135,7 +136,7 @@ nufs_bmap(struct nufs *v, const struct nufs_dinode *dp, int lbn, int *frag)
 	blk = dp->ib[nlevels - 1];
 	buf = malloc((size_t)v->bsize);
 	if (buf == NULL) {
-		nufs_err(v, "out of memory");
+		nufs_errc(v, ENOMEM, "out of memory");
 		return -1;
 	}
 	for (i = 0; i < nlevels; i++) {
@@ -168,7 +169,7 @@ nufs_file_read(struct nufs *v, const struct nufs_dinode *dp, void *vbuf,
 		n = (long)(dp->size - off);
 	blk = malloc((size_t)v->bsize);
 	if (blk == NULL) {
-		nufs_err(v, "out of memory");
+		nufs_errc(v, ENOMEM, "out of memory");
 		return -1;
 	}
 	while (done < n) {
@@ -211,7 +212,7 @@ nufs_readlink(struct nufs *v, const struct nufs_dinode *dp, char *buf, size_t n)
 	long got;
 
 	if (dp->size >= n) {
-		nufs_err(v, "symlink target too long");
+		nufs_errc(v, ENAMETOOLONG, "symlink target too long");
 		return -1;
 	}
 	if (dp->flags & NUFS_IC_FASTLINK) {

@@ -7,6 +7,7 @@
  * rejects a directory that breaks either.
  */
 #include "nextufs.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -68,11 +69,12 @@ nufs_dir_add(struct nufs *v, struct nufs_dinode *dir, const char *name,
 	uint32_t exists;
 
 	if (namlen == 0 || namlen > NUFS_MAXNAMLEN) {
-		nufs_err(v, "bad name length");
+		nufs_errc(v, namlen == 0 ? EINVAL : ENAMETOOLONG,
+		    "bad name length");
 		return -1;
 	}
 	if (nufs_dir_lookup(v, dir, name, &exists) == 0) {
-		nufs_err(v, "\"%s\" already exists", name);
+		nufs_errc(v, EEXIST, "\"%s\" already exists", name);
 		return -1;
 	}
 
@@ -152,7 +154,7 @@ nufs_dir_remove(struct nufs *v, struct nufs_dinode *dir, const char *name)
 			o += reclen;
 		}
 	}
-	nufs_err(v, "no entry \"%s\"", name);
+	nufs_errc(v, ENOENT, "no entry \"%s\"", name);
 	return -1;
 }
 
@@ -201,14 +203,14 @@ nufs_lookup_parent(struct nufs *v, const char *path, struct nufs_dinode *parent,
 		base++;
 	}
 	if (*base == '\0') {
-		nufs_err(v, "\"%s\" has no final component", path);
+		nufs_errc(v, EINVAL, "\"%s\" has no final component", path);
 		return -1;
 	}
 	snprintf(name, namesz, "%s", base);
 	if (nufs_lookup(v, dir, parent) != 0)
 		return -1;
 	if ((parent->mode & S_IFMT_) != S_DIR_) {
-		nufs_err(v, "\"%s\" is not a directory", dir);
+		nufs_errc(v, ENOTDIR, "\"%s\" is not a directory", dir);
 		return -1;
 	}
 	return 0;
@@ -321,7 +323,7 @@ nufs_unlink(struct nufs *v, const char *path)
 	if (nufs_inode_read(v, ino, &node) != 0)
 		return -1;
 	if ((node.mode & S_IFMT_) == S_DIR_) {
-		nufs_err(v, "\"%s\" is a directory", path);
+		nufs_errc(v, EISDIR, "\"%s\" is a directory", path);
 		return -1;
 	}
 	if (nufs_dir_remove(v, &parent, name) != 0)
@@ -366,19 +368,19 @@ nufs_rmdir(struct nufs *v, const char *path)
 	if (nufs_dir_lookup(v, &parent, name, &ino) != 0)
 		return -1;
 	if (ino == NUFS_ROOTINO) {
-		nufs_err(v, "cannot remove the root directory");
+		nufs_errc(v, EBUSY, "cannot remove the root directory");
 		return -1;
 	}
 	if (nufs_inode_read(v, ino, &node) != 0)
 		return -1;
 	if ((node.mode & S_IFMT_) != S_DIR_) {
-		nufs_err(v, "\"%s\" is not a directory", path);
+		nufs_errc(v, ENOTDIR, "\"%s\" is not a directory", path);
 		return -1;
 	}
 	if (nufs_readdir(v, &node, empty_cb, &c) != 0)
 		return -1;
 	if (c.n != 0) {
-		nufs_err(v, "\"%s\" is not empty", path);
+		nufs_errc(v, ENOTEMPTY, "\"%s\" is not empty", path);
 		return -1;
 	}
 	if (nufs_dir_remove(v, &parent, name) != 0)
@@ -415,7 +417,7 @@ nufs_rename(struct nufs *v, const char *from, const char *to)
 	if (nufs_lookup_parent(v, to, &todir, tname, sizeof(tname)) != 0)
 		return -1;
 	if (nufs_dir_lookup(v, &todir, tname, &victim) == 0) {
-		nufs_err(v, "\"%s\" already exists", to);
+		nufs_errc(v, EEXIST, "\"%s\" already exists", to);
 		return -1;
 	}
 	if (isdir && todir.ino != fromdir.ino) {

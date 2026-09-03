@@ -260,6 +260,7 @@ struct nufs {
 	int		dirty_cg;
 
 	char		err[256];
+	int		errnum;			/* errno for the last failure */
 };
 
 /* util.c */
@@ -270,6 +271,7 @@ void	 nufs_put16(const struct nufs *, void *, int off, uint16_t v);
 int	 nufs_pread(struct nufs *, void *buf, long long off, size_t n);
 int	 nufs_pwrite(struct nufs *, const void *buf, long long off, size_t n);
 void	 nufs_err(struct nufs *, const char *fmt, ...);
+void	 nufs_errc(struct nufs *, int errnum, const char *fmt, ...);
 
 /* label.c */
 int	nufs_label_read(struct nufs *, struct nufs_label *);

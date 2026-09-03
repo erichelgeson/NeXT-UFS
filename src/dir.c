@@ -1,4 +1,5 @@
 #include "nextufs.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -11,12 +12,12 @@ nufs_readdir(struct nufs *v, const struct nufs_dinode *dp, nufs_dir_cb cb,
 	int rc = 0;
 
 	if ((dp->mode & 0170000) != 0040000) {
-		nufs_err(v, "inode %u is not a directory", dp->ino);
+		nufs_errc(v, ENOTDIR, "inode %u is not a directory", dp->ino);
 		return -1;
 	}
 	buf = malloc(NUFS_DIRBLKSIZ);
 	if (buf == NULL) {
-		nufs_err(v, "out of memory");
+		nufs_errc(v, ENOMEM, "out of memory");
 		return -1;
 	}
 	for (off = 0; off < (long long)dp->size; off += NUFS_DIRBLKSIZ) {
@@ -86,7 +87,7 @@ nufs_dir_lookup(struct nufs *v, const struct nufs_dinode *dir, const char *name,
 	if (nufs_readdir(v, dir, lookup_cb, &c) < 0)
 		return -1;
 	if (c.ino == 0) {
-		nufs_err(v, "no entry \"%s\"", name);
+		nufs_errc(v, ENOENT, "no entry \"%s\"", name);
 		return -1;
 	}
 	*ino = c.ino;

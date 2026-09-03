@@ -11,6 +11,7 @@
  *	cg_cs / fs_cs / fs_cstotal	the summary counters
  */
 #include "nextufs.h"
+#include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -221,7 +222,7 @@ nufs_alloc_block(struct nufs *v, int pref)
 		nufs_touch(v);
 		return nufs_cgbase(v, cg) + bno;
 	}
-	nufs_err(v, "no free blocks left");
+	nufs_errc(v, ENOSPC, "no free blocks left");
 	return 0;
 }
 
@@ -235,7 +236,7 @@ nufs_alloc_frags(struct nufs *v, int pref, int n)
 	int i, cg, ndblk, bno, run, base;
 
 	if (n <= 0 || n > v->frag) {
-		nufs_err(v, "bad fragment count %d", n);
+		nufs_errc(v, EINVAL, "bad fragment count %d", n);
 		return 0;
 	}
 	if (n == v->frag)
@@ -295,7 +296,7 @@ nufs_alloc_frags(struct nufs *v, int pref, int n)
 		nufs_touch(v);
 		return nufs_cgbase(v, cg) + bno;
 	}
-	nufs_err(v, "no free fragments left");
+	nufs_errc(v, ENOSPC, "no free fragments left");
 	return 0;
 }
 
@@ -401,7 +402,7 @@ nufs_alloc_inode(struct nufs *v, int pref, int isdir)
 			return (uint32_t)(cg * v->ipg + n);
 		}
 	}
-	nufs_err(v, "no free inodes left");
+	nufs_errc(v, ENOSPC, "no free inodes left");
 	return 0;
 }
 

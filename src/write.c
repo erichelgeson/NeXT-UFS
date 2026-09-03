@@ -6,6 +6,7 @@
  * applied anyway so an odd volume still comes out right.
  */
 #include "nextufs.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -75,7 +76,7 @@ alloc_indirect(struct nufs *v, struct nufs_dinode *dp)
 		return 0;
 	zero = calloc(1, (size_t)v->bsize);
 	if (zero == NULL) {
-		nufs_err(v, "out of memory");
+		nufs_errc(v, ENOMEM, "out of memory");
 		return 0;
 	}
 	if (nufs_write_frags(v, blk, v->frag, zero) != 0) {
@@ -123,7 +124,8 @@ map_block(struct nufs *v, struct nufs_dinode *dp, int lbn, int alloc,
 		lbn -= (int)span;
 	}
 	if (nlevels > NUFS_NIADDR) {
-		nufs_err(v, "file is too large for a triple indirect block");
+		nufs_errc(v, EFBIG,
+		    "file is too large for a triple indirect block");
 		return -1;
 	}
 	for (level = nlevels - 1, i = 0; level >= 0; level--, i++) {
@@ -148,7 +150,7 @@ map_block(struct nufs *v, struct nufs_dinode *dp, int lbn, int alloc,
 
 	buf = malloc((size_t)v->bsize);
 	if (buf == NULL) {
-		nufs_err(v, "out of memory");
+		nufs_errc(v, ENOMEM, "out of memory");
 		return -1;
 	}
 	for (i = 0; i < nlevels; i++) {
@@ -222,7 +224,7 @@ ensure_block(struct nufs *v, struct nufs_dinode *dp, int lbn, int want,
 		return -1;
 	buf = calloc(1, (size_t)v->bsize);
 	if (buf == NULL) {
-		nufs_err(v, "out of memory");
+		nufs_errc(v, ENOMEM, "out of memory");
 		return -1;
 	}
 	rc = nufs_read_frags(v, old, have, buf);
@@ -273,7 +275,7 @@ nufs_file_write(struct nufs *v, struct nufs_dinode *dp, const void *vbuf,
 
 	blk = malloc((size_t)v->bsize);
 	if (blk == NULL) {
-		nufs_err(v, "out of memory");
+		nufs_errc(v, ENOMEM, "out of memory");
 		return -1;
 	}
 	while (done < n) {
@@ -330,7 +332,7 @@ free_indirect(struct nufs *v, struct nufs_dinode *dp, int blk, int level)
 	if (level > 0) {
 		buf = malloc((size_t)v->bsize);
 		if (buf == NULL) {
-			nufs_err(v, "out of memory");
+			nufs_errc(v, ENOMEM, "out of memory");
 			return -1;
 		}
 		if (nufs_read_frags(v, blk, v->frag, buf) != 0) {

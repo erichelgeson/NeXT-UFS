@@ -1,4 +1,5 @@
 #include "nextufs.h"
+#include <errno.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -41,7 +42,7 @@ lookup(struct nufs *v, const char *path, struct nufs_dinode *dp, int depth)
 	char *seg, *save = NULL;
 
 	if (depth > MAXSYMLINKS) {
-		nufs_err(v, "too many levels of symbolic links");
+		nufs_errc(v, ELOOP, "too many levels of symbolic links");
 		return -1;
 	}
 	if (nufs_inode_read(v, NUFS_ROOTINO, dp) != 0)
@@ -71,7 +72,7 @@ lookup(struct nufs *v, const char *path, struct nufs_dinode *dp, int depth)
 				snprintf(next, sizeof(next), "%s/%s/%s", cur,
 				    link, rest);
 			if (strlen(next) >= PATHMAX) {
-				nufs_err(v, "resolved path is too long");
+				nufs_errc(v, ENAMETOOLONG, "resolved path is too long");
 				return -1;
 			}
 			return lookup(v, next, dp, depth + 1);
