@@ -241,7 +241,7 @@ nufs_fsck(struct nufs *v, int fix)
 	struct fsck f;
 	uint32_t nfrag = (uint32_t)v->size;
 	uint32_t ino;
-	int cg, rc = 0;
+	int cg, rc = 0, markclean = 0;
 	int32_t tot_ndir = 0, tot_nbfree = 0, tot_nifree = 0, tot_nffree = 0;
 
 	memset(&f, 0, sizeof(f));
@@ -565,17 +565,31 @@ nufs_fsck(struct nufs *v, int fix)
 	if (v->sb[FS_STATE] != NUFS_STATE_CLEAN)
 		problem(&f, "fs_state is %d, not clean", v->sb[FS_STATE]);
 
+	/*
+	 * Marking the volume clean is the whole point of running this after a
+	 * mount was killed, so it happens whenever the state says dirty, not
+	 * only when something else needed repairing.
+	 */
+	if (fix) {
+		int dirty = v->sb[FS_STATE] != NUFS_STATE_CLEAN ||
+		    v->sb[FS_FMOD] != 0;
+
+		if (dirty)
+			f.fixed++;
+		if (dirty || f.fixed > 0) {
+			v->sb[FS_FMOD] = 0;
+			v->sb[FS_STATE] = NUFS_STATE_CLEAN;
+			v->dirty_sb = 1;
+			markclean = 1;
+		}
+	}
+
 	printf("%d problem%s found", f.problems, f.problems == 1 ? "" : "s");
 	if (fix)
 		printf(", %d fixed", f.fixed);
 	putchar('\n');
-	if (fix && f.fixed > 0) {
-		v->sb[FS_FMOD] = 0;
-		v->sb[FS_STATE] = NUFS_STATE_CLEAN;
-		v->dirty_sb = 1;
-		if (nufs_flush(v) != 0)
-			rc = -1;
-	}
+	if (markclean && nufs_flush(v) != 0)
+		rc = -1;
 	if (f.problems > 0 && !fix)
 		rc = 1;
 

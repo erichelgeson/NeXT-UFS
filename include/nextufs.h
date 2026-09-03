@@ -282,6 +282,8 @@ void	nufs_label_print(const struct nufs_label *, FILE *);
 struct nufs *nufs_open(const char *path, const char *partspec, int rw, char *errbuf, size_t errlen);
 void	nufs_close(struct nufs *);
 int	nufs_flush(struct nufs *);
+int	nufs_sync(struct nufs *);
+int	nufs_mark(struct nufs *, int state);
 long long nufs_fragoff(const struct nufs *, int frag);
 int	nufs_read_frags(struct nufs *, int frag, int nfrags, void *buf);
 int	nufs_write_frags(struct nufs *, int frag, int nfrags, const void *buf);

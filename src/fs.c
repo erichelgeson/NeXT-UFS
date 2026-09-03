@@ -1,7 +1,10 @@
 #include "nextufs.h"
 #include <errno.h>
+#include <sys/file.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define SBGET(f)	((int32_t)nufs_get32(v, v->sb, (f)))
 
@@ -162,6 +165,36 @@ nufs_flush(struct nufs *v)
 	return 0;
 }
 
+/*
+ * Record whether the volume is being written. NeXT's kernel refuses to mount
+ * a volume whose fs_state is not NUFS_STATE_CLEAN without running fsck first,
+ * which is exactly what should happen if a mount is killed mid-write.
+ */
+int
+nufs_mark(struct nufs *v, int state)
+{
+	if (!v->rw)
+		return 0;
+	v->sb[FS_STATE] = (uint8_t)state;
+	v->sb[FS_FMOD] = (uint8_t)(state == NUFS_STATE_DIRTY);
+	nufs_put32(v, v->sb, FS_TIME, (uint32_t)time(NULL));
+	v->dirty_sb = 1;
+	return nufs_flush(v);
+}
+
+/* Flush the buffers this library holds, then the ones the kernel holds. */
+int
+nufs_sync(struct nufs *v)
+{
+	if (nufs_flush(v) != 0)
+		return -1;
+	if (v->rw && fsync(fileno(v->f)) != 0) {
+		nufs_err(v, "fsync failed: %s", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
 static int
 pick_partition(struct nufs *v, const char *spec)
 {
@@ -225,6 +258,16 @@ nufs_open(const char *path, const char *partspec, int rw, char *errbuf,
 	v->f = fopen(path, rw ? "r+b" : "rb");
 	if (v->f == NULL) {
 		nufs_err(v, "cannot open %s", path);
+		goto fail;
+	}
+	/*
+	 * One writer at a time: the CLI must not scribble on a mounted image,
+	 * and an image must not be mounted twice.
+	 */
+	if (flock(fileno(v->f), (rw ? LOCK_EX : LOCK_SH) | LOCK_NB) != 0 &&
+	    (errno == EWOULDBLOCK || errno == EAGAIN)) {
+		nufs_errc(v, EBUSY, "%s is in use (mounted, or open elsewhere)",
+		    path);
 		goto fail;
 	}
 	if (nufs_label_read(v, &v->label) == 0) {
