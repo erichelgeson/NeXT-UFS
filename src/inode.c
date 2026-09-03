@@ -78,6 +78,22 @@ nufs_detect_aux(struct nufs *v)
 	return hi != 0 || nufs_get32(v, raw, DI_AUXID) == NUFS_MACROOTID;
 }
 
+/*
+ * Wipe an inode on disk. nufs_inode_write deliberately preserves every word
+ * it does not model, which is right for an inode in use and wrong for one
+ * just handed out: without this a new file inherits the Finder type, dates
+ * and fork lengths of whatever used the number last. 4.3BSD's ialloc clears
+ * the inode for the same reason.
+ */
+int
+nufs_inode_clear(struct nufs *v, uint32_t ino)
+{
+	uint8_t zero[NUFS_DINODE_SIZE];
+
+	memset(zero, 0, sizeof(zero));
+	return nufs_pwrite(v, zero, inode_offset(v, ino), sizeof(zero));
+}
+
 int
 nufs_inode_read(struct nufs *v, uint32_t ino, struct nufs_dinode *dp)
 {

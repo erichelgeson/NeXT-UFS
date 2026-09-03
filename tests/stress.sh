@@ -206,6 +206,28 @@ check "after removing every file"
 "$NEXTUFS" "$IMG" rmdir /a
 check "after removing every directory"
 
+# --- filling the volume must not strand anything ------------------------
+# A write that runs out of space has already allocated the block it died on
+# and taken an inode. Both have to come back, or fsck finds blocks no file
+# claims and an inode nothing points at.
+echo "--- writing until the volume is full"
+head -c 500000 /dev/urandom > "$W/big"
+"$NEXTUFS" "$IMG" mkdir /fillup
+i=0
+while [ $i -lt 4000 ]; do
+	i=$((i + 1))
+	"$NEXTUFS" "$IMG" put "$W/big" "/fillup/f$i" >/dev/null 2>&1 || break
+done
+echo "      stopped after $i files"
+[ "$i" -lt 4000 ] || { echo "FAIL  never ran out of space"; fail=1; }
+check "after filling the volume until writes fail"
+while [ $i -gt 0 ]; do
+	"$NEXTUFS" "$IMG" rm "/fillup/f$i" >/dev/null 2>&1
+	i=$((i - 1))
+done
+"$NEXTUFS" "$IMG" rmdir /fillup || { echo "FAIL  rmdir /fillup"; fail=1; }
+check "after emptying it again"
+
 # --- back to where we started ------------------------------------------
 echo "--- free space returned to the starting value"
 before=$("$NEXTUFS" "$SRC" info | grep '^free')

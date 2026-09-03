@@ -62,6 +62,13 @@ static void
 die(struct nufs *v, const char *what)
 {
 	fprintf(stderr, "%s: %s: %s\n", progname, what, v->err);
+	/*
+	 * Close rather than exit outright. A command that fails partway has
+	 * already put the volume back in a consistent state in memory, and
+	 * throwing that away unwritten is what leaves an inode allocated with
+	 * nothing pointing at it.
+	 */
+	nufs_close(v);
 	exit(1);
 }
 
@@ -268,6 +275,12 @@ put_file(struct nufs *v, const char *host, const char *path, mode_t mode)
 	while ((got = fread(buf, 1, sizeof(buf), in)) > 0) {
 		if (nufs_file_write(v, &node, buf, off, (long)got) !=
 		    (long)got) {
+			/* Half a file is worse than none: take it back out. */
+			char saved[256];
+
+			snprintf(saved, sizeof(saved), "%s", v->err);
+			nufs_unlink(v, path);
+			snprintf(v->err, sizeof(v->err), "%s", saved);
 			fclose(in);
 			return -1;
 		}

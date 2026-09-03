@@ -402,6 +402,7 @@ iused_set(struct nufs *v, int i, int on)
 uint32_t
 nufs_alloc_inode(struct nufs *v, int pref, int isdir)
 {
+	uint32_t ino;
 	int i, cg, n;
 
 	if (pref < 0 || pref >= v->ncg)
@@ -423,7 +424,10 @@ nufs_alloc_inode(struct nufs *v, int pref, int isdir)
 			if (isdir)
 				cs_adjust(v, cg, CS_NDIR, 1);
 			nufs_touch(v);
-			return (uint32_t)(cg * v->ipg + n);
+			ino = (uint32_t)(cg * v->ipg + n);
+			if (nufs_inode_clear(v, ino) != 0)
+				return 0;
+			return ino;
 		}
 	}
 	nufs_errc(v, ENOSPC, "no free inodes left");

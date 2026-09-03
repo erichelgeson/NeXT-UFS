@@ -425,6 +425,7 @@ void	nufs_touch(struct nufs *);
 int	nufs_detect_aux(struct nufs *);
 int	nufs_inode_read(struct nufs *, uint32_t ino, struct nufs_dinode *);
 int	nufs_inode_write(struct nufs *, const struct nufs_dinode *);
+int	nufs_inode_clear(struct nufs *, uint32_t ino);
 int	nufs_bmap(struct nufs *, const struct nufs_dinode *, int lbn, int *frag);
 long	nufs_file_read(struct nufs *, const struct nufs_dinode *, void *buf,
 	    long long off, long n);

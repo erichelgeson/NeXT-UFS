@@ -131,6 +131,14 @@ want "free space is back where it started" \
 	"$("$NEXTUFS" "$IMG" info | sed -n 's/^free      //p')" \
 	"$("$NEXTUFS" "$SRC" info | sed -n 's/^free      //p')"
 
+# --- filling it up must not strand anything ------------------------------
+# The volume has only a few megabytes free, so this reaches ENOSPC quickly.
+# What matters is that the failed write leaves nothing behind.
+for i in $(seq 1 400); do
+	"$NEXTUFS" "$IMG" put "$W/vmunix" "/big$i" >/dev/null 2>&1 || break
+done
+check "after filling the volume until writes fail"
+
 # --- the clean flag round-trips ------------------------------------------
 "$NEXTUFS" "$IMG" fsck -y >/dev/null 2>&1
 grep -q '^state .*fs_clean 1 (clean)' <<<"$("$NEXTUFS" "$IMG" info)" \

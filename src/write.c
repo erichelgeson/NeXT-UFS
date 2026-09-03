@@ -364,7 +364,24 @@ nufs_file_write(struct nufs *v, struct nufs_dinode *dp, const void *vbuf,
 	return done;
 
 fail:
+	/*
+	 * A write that stops partway -- running out of space is the way this
+	 * happens -- has usually allocated the block it died on. Save the
+	 * bytes that did land, then truncate to that size, which hands the
+	 * unfilled block back. Leaving it would strand blocks that no inode
+	 * claims and fsck would have to find.
+	 */
 	free(blk);
+	dp->mtime = dp->ctime = (uint32_t)time(NULL);
+	if (nufs_inode_write(v, dp) == 0) {
+		char saved[sizeof(v->err)];
+		int savederr = v->errnum;
+
+		snprintf(saved, sizeof(saved), "%s", v->err);
+		nufs_truncate(v, dp, dp->size);
+		snprintf(v->err, sizeof(v->err), "%s", saved);
+		v->errnum = savederr;
+	}
 	return -1;
 }
 
