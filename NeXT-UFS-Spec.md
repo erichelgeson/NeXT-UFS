@@ -534,6 +534,8 @@ Exit status 0 means clean; 8 means it wanted to change something.
   fields. §12.
 - **SunOS** — the same inodes and directory entries, and a different cylinder
   group. §13.
+- **Solaris 2** — SunOS's cylinder group, and four inode words spent on the
+  ACL and a 32-bit owner. Read, never written. §13.5.
 - Linux's `ufstype=openstep` selects the 4.4BSD directory, inode and cylinder
   group layouts. Neither reference OPENSTEP volume uses them: HD00 is old-format
   throughout, and `ufstype=nextstep` is the correct choice for it.
@@ -784,7 +786,35 @@ in-core scratch that the kernel clears on the way to disk. So a SunOS volume
 carries no metadata of its own in the fields A/UX uses, and nothing has to be
 preserved through a write beyond what §12 already says.
 
-Solaris 2 is a different filesystem in this respect and is not covered here.
+### 13.5 Solaris 2, which is not SunOS 4
+
+SVR4 UFS carries the same `fs_magic` and the same dynamic cylinder group, and
+its superblock does not announce itself: `fs_version`, `fs_logbno` and
+`fs_reclaim` sit in words SunOS 4 leaves spare, and a plain Solaris volume
+that is not logging leaves all three zero. Multi-terabyte UFS is the
+exception, carrying `MTB_UFS_MAGIC` 0x00decade instead.
+
+The inodes are where they part. Solaris spent the four words at 112-127:
+
+| Offset | SunOS 4 | Solaris 2 |
+|---|---|---|
+| 4 | `ic_uid`, the owner | `ic_suid`, a stub holding `UID_LONG` when the real one will not fit |
+| 6 | `ic_gid` | `ic_sgid`, the same |
+| 112 | in-core scratch, zero on disk | `ic_shadow`, the inode holding the ACL |
+| 116 | in-core scratch, zero on disk | `ic_uid`, the real 32-bit owner |
+| 120 | in-core scratch, zero on disk | `ic_gid` |
+| 124 | in-core scratch, zero on disk | `ic_oeftflag`, the extended attribute directory |
+
+So the two are told apart by reading inodes and looking for the 32-bit pair
+agreeing with the 16-bit stub in front of it, which is a shape stale bytes do
+not take. A volume of nothing but root-owned files says nothing either way and
+is read as SunOS, which is the safe direction.
+
+Writing a Solaris volume as though those words were spare would destroy the
+owner of every inode touched, so it is refused. The clean flag needs no
+special case: Solaris keeps `fs_state` at `fs_sparecon[53]`, offset 1336,
+which is where SunOS 4's `fs_sparecon[55]` lands, and the `FSOKAY` rule is
+the same.
 
 ---
 
@@ -802,6 +832,9 @@ Solaris 2 is a different filesystem in this respect and is not covered here.
   in §12.3 come from A/UX's own `sys/xstat.h`, `sys/stat.h`, `ufs/inode.h`,
   `mac/files.h` and `mac/asd.h`, which ship in `/usr/include` on that very
   volume and are copied to `local-scratch/src/aux-headers/`.
+- For §13.5, illumos's `uts/common/sys/fs/ufs_inode.h` and `ufs_fs.h`, which
+  are Solaris 2's own, and a Solaris 2.6 5/98 SPARC disk from archive.org item
+  `solaris265-qemu`.
 - For §13, the SunOS 4.1.1 sun3 install miniroot, and SunOS 4.1.4's own
   `sys/ufs/fs.h`, `sys/ufs/inode.h` and `etc/fsck/`, from the source tree in
   archive.org item `titor-special_202112`. Everything §13 states about the

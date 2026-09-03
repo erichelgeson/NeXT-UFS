@@ -29,13 +29,13 @@ ok()   { echo "ok    $1"; }
 bad()  { echo "FAIL  $1"; fail=1; }
 want() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
-problems() {			# how many problems fsck reports
-	"$NEXTUFS" "$IMG" fsck 2>&1 | sed -n 's/^\([0-9]*\) problems* found.*/\1/p'
-}
-
+# Writing to a SunOS volume invalidates its clean flag, which is the point of
+# the flag, so fsck rightly says so until fsck -y or an unmount clears it.
+# That one complaint is expected here; anything else is not.
 check() {
 	local what=$1 n
-	n=$(problems)
+	n=$("$NEXTUFS" "$IMG" fsck 2>&1 | grep '^  ' |
+	    grep -vc 'not marked clean')
 	if [ "$n" = 0 ]; then
 		ok "$what"
 	else

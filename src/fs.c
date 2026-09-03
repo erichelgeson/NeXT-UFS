@@ -35,8 +35,20 @@ static int
 read_superblock(struct nufs *v)
 {
 	if (sb_magic_at(v, v->partoff, &v->be) != 0) {
-		nufs_err(v, "no UFS superblock at offset %lld",
-		    v->partoff + NUFS_SBOFF);
+		uint8_t probe[4];
+
+		/*
+		 * Multi-terabyte UFS carries its own magic. Nothing here can
+		 * read one, but saying so beats "no superblock".
+		 */
+		if (nufs_pread(v, probe, v->partoff + NUFS_SBOFF + FS_MAGIC,
+		    4) == 0 && probe[0] == 0x00 && probe[1] == 0xde &&
+		    probe[2] == 0xca && probe[3] == 0xde)
+			nufs_err(v, "this is multi-terabyte UFS (Solaris), "
+			    "which this tool does not read");
+		else
+			nufs_err(v, "no UFS superblock at offset %lld",
+			    v->partoff + NUFS_SBOFF);
 		return -1;
 	}
 	if (nufs_pread(v, v->sb, v->partoff + NUFS_SBOFF, 2048) != 0)
@@ -496,6 +508,13 @@ nufs_open(const char *path, const char *partspec, int rw, char *errbuf,
 	if (detect_cgfmt(v) != 0)
 		goto fail;
 	v->aux = nufs_detect_aux(v);
+	v->solaris = nufs_detect_solaris(v);
+	if (v->solaris && rw) {
+		nufs_errc(v, EROFS, "this is SVR4 UFS (Solaris 2), which keeps "
+		    "the real uid, gid and the ACL in words SunOS 4 leaves "
+		    "spare. It can be read, not written");
+		goto fail;
+	}
 
 	v->cgbuf = malloc((size_t)v->cgsize);
 	v->csum = malloc((size_t)v->cssize);

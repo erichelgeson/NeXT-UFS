@@ -79,6 +79,18 @@ nufs_detect_aux(struct nufs *v)
 }
 
 /*
+ * Does a 16-bit owner stub match the 32-bit field behind it? Solaris writes
+ * both, and puts UID_LONG in the stub when the real value will not fit.
+ */
+static int
+id_agrees(uint16_t stub, uint32_t full)
+{
+	if (stub == NUFS_UID_LONG)
+		return full > NUFS_UID_LONG - 1;
+	return stub == full;
+}
+
+/*
  * Wipe an inode on disk. nufs_inode_write deliberately preserves every word
  * it does not model, which is right for an inode in use and wrong for one
  * just handed out: without this a new file inherits the Finder type, dates
@@ -92,6 +104,66 @@ nufs_inode_clear(struct nufs *v, uint32_t ino)
 
 	memset(zero, 0, sizeof(zero));
 	return nufs_pwrite(v, zero, inode_offset(v, ino), sizeof(zero));
+}
+
+/*
+ * Is this SVR4 UFS rather than SunOS 4? Both carry fs_magic and the dynamic
+ * cylinder group, and the superblock does not separate them: a plain Solaris
+ * volume that is not logging leaves fs_version, fs_logbno and fs_reclaim
+ * zero, exactly as SunOS 4 leaves the spare words they sit in.
+ *
+ * The inodes do separate them. SunOS 4 keeps nothing at all in 112-127 --
+ * its struct names four fields there, but they are in-core scratch the
+ * kernel clears on the way to disk -- while Solaris keeps the shadow inode
+ * and the real 32-bit uid and gid. So look for the 32-bit pair agreeing with
+ * the 16-bit stub in front of it, which is a shape stale bytes would not
+ * take: an inode owned by uid 100 reads 100 in both places, and one owned by
+ * a uid too large for the stub reads UID_LONG there and the real value here.
+ *
+ * A volume of nothing but root-owned files says nothing either way, and is
+ * treated as SunOS. That is the safe way round: it costs a Solaris volume
+ * that has no owners to get wrong.
+ *
+ * A SunOS volume never produces a hit, so the scan would otherwise read
+ * every inode on the disk to prove a negative. It stops after NUFS_IDSCAN
+ * used inodes, which is far more than it takes to find an owned file on any
+ * real root filesystem.
+ */
+int
+nufs_detect_solaris(struct nufs *v)
+{
+	int cg, i, hits = 0, seen = 0;
+
+	if (!v->dyncg)
+		return 0;
+	for (cg = 0; cg < v->ncg && seen < NUFS_IDSCAN; cg++) {
+		for (i = 0; i < v->ipg && seen < NUFS_IDSCAN; i++) {
+			uint8_t raw[NUFS_DINODE_SIZE];
+			uint32_t ino = (uint32_t)(cg * v->ipg + i);
+			uint32_t uid32, gid32;
+			uint16_t suid, sgid;
+
+			if (nufs_pread(v, raw, inode_offset(v, ino),
+			    sizeof(raw)) != 0) {
+				v->err[0] = '\0';
+				return 0;
+			}
+			if (nufs_get16(v, raw, DI_MODE) == 0)
+				continue;
+			seen++;
+			suid = nufs_get16(v, raw, DI_UID);
+			sgid = nufs_get16(v, raw, DI_GID);
+			uid32 = nufs_get32(v, raw, DI_UID32);
+			gid32 = nufs_get32(v, raw, DI_GID32);
+			if (uid32 == 0 && gid32 == 0)
+				continue;	/* says nothing either way */
+			if (!id_agrees(suid, uid32) || !id_agrees(sgid, gid32))
+				return 0;	/* not the Solaris shape */
+			if (++hits >= 8)
+				return 1;
+		}
+	}
+	return hits > 0;
 }
 
 int

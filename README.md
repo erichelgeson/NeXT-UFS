@@ -154,10 +154,20 @@ Two smaller differences:
   microseconds, in a word NeXT leaves empty. `stat` shows them.
 
 Checked against the SunOS 4.1.1 sun3 install miniroot and against SunOS
-4.1.4's own `sys/ufs/fs.h`. Later BSDs and Solaris write the same cylinder
-group, so they should work the same way, and no version past SunOS 4 has been
-tried. Solaris 2 is the one to be careful with: it moved to a 32-bit uid and
-gid kept in fields SunOS 4 leaves empty, and nothing here knows about that.
+4.1.4's own `sys/ufs/fs.h`. Later BSDs write the same cylinder group, so they
+should work the same way, and none has been tried.
+
+**Solaris 2, read-only.** SVR4 UFS is the same filesystem again, and it reads:
+`ls`, `cat`, `get` and `fsck` all work on a Solaris volume. It is never
+written. Solaris spent the four inode words SunOS 4 leaves empty on the ACL
+and on the real 32-bit owner, and writing one as though they were spare would
+destroy the owner of every file it touched. `nextufs` tells the two apart by
+the inodes, since the superblock does not distinguish them, and refuses to
+open a Solaris volume for writing.
+
+Checked against a Solaris 2.6 SPARC disk and against illumos's
+`ufs_inode.h`. Multi-terabyte UFS has a magic number of its own and is not
+read at all, but it is recognised well enough to say so.
 
 ## Verification
 
@@ -171,6 +181,10 @@ directory blocks, and the Finder fields, including that a file the Finder has
 never seen gets none invented for it. Because a snapshot of a live A/UX disk is
 never a clean volume, it holds the tool to leaving the problem count no worse
 than it found it. It skips itself when there is no image to run on.
+
+`tests/solaris.sh <image>` checks that a Solaris volume is recognised, reads,
+and is refused for writing. It names where to get the image and how to convert
+it.
 
 `tests/sun.sh <image>` reads a SunOS volume and writes to a copy, running
 `fsck` after every step. That is the check that matters for SunOS: `fsck`
@@ -205,5 +219,6 @@ compares.
   reports duplicate or out-of-range blocks rather than trying to fix them.
 - Extended attributes are not supported.
 - `mkfs` makes NeXT volumes. There is no A/UX or SunOS equivalent.
+- Solaris 2 volumes are read, never written.
 - Little-endian volumes are handled but have never been run against a real
   NeXTSTEP for Intel disk.

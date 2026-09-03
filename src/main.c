@@ -194,7 +194,9 @@ cmd_info(struct nufs *v)
 	else
 		printf("using     filesystem at byte offset 0x%llx (no label)\n",
 		    (unsigned long long)v->partoff);
-	printf("variant   %s\n", v->dyncg ? "SunOS or a later BSD"
+	printf("variant   %s\n", v->solaris ? "Solaris 2 (SVR4 UFS),"
+	    " readable but not writable" :
+	    v->dyncg ? "SunOS or a later BSD"
 	    " (dynamic cylinder groups)" :
 	    v->aux ? "A/UX (Macintosh metadata in the spare inode fields)" :
 	    "NeXT");

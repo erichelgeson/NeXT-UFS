@@ -155,6 +155,21 @@
 #define CG_DYN_FREEOFF	96
 #define CG_DYN_NEXTFREEOFF 100
 
+/* ---- Solaris 2 -------------------------------------------------------------
+ * SVR4 UFS is the same filesystem again, with the dynamic cylinder group, but
+ * Sun spent the four words SunOS 4 leaves empty. Writing one of these as
+ * though those words were spare would destroy an inode's real owner, so a
+ * volume that looks like this is refused for writing. From illumos
+ * uts/common/sys/fs/ufs_inode.h and ufs_fs.h, which are Solaris 2's own.
+ */
+#define DI_SHADOW	112		/* shadow inode, holding the ACL */
+#define DI_UID32	116		/* the real uid; DI_UID is a stub */
+#define DI_GID32	120
+#define DI_OEFTFLAG	124		/* extended attribute directory inode */
+#define NUFS_UID_LONG	65535		/* di_uid when the real one is at 116 */
+#define NUFS_MTB_MAGIC	0x00decade	/* multi-terabyte UFS, a later Solaris */
+#define NUFS_IDSCAN	4096		/* used inodes to read before giving up */
+
 /* ---- inode field byte offsets (struct icommon) -------------------------- */
 #define DI_MODE		0		/* u_short */
 #define DI_NLINK	2		/* short */
@@ -345,6 +360,8 @@ struct nufs {
 	int		apmno;			/* map entry in use, -1 if none */
 	int		aux;			/* volume carries A/UX metadata */
 	int		dyncg;			/* dynamic cylinder groups */
+	int		solaris;		/* SVR4 UFS: the spare inode words
+						 * hold the real uid and gid */
 
 	uint8_t		sb[NUFS_SBSIZE];
 	int		dirty_sb;
@@ -423,6 +440,7 @@ void	nufs_touch(struct nufs *);
 
 /* inode.c */
 int	nufs_detect_aux(struct nufs *);
+int	nufs_detect_solaris(struct nufs *);
 int	nufs_inode_read(struct nufs *, uint32_t ino, struct nufs_dinode *);
 int	nufs_inode_write(struct nufs *, const struct nufs_dinode *);
 int	nufs_inode_clear(struct nufs *, uint32_t ino);

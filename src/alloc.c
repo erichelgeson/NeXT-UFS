@@ -159,6 +159,15 @@ nufs_touch(struct nufs *v)
 {
 	nufs_put32(v, v->sb, FS_TIME, (uint32_t)time(NULL));
 	v->sb[FS_FMOD] = 1;
+	/*
+	 * SunOS vouches for its clean flag with a word holding FSOKAY minus
+	 * the write time, so moving fs_time is already meant to invalidate it.
+	 * Clear it outright rather than relying on that: a write inside the
+	 * same second would leave the old word still matching, and whether a
+	 * volume needs checking would come down to the clock.
+	 */
+	if (v->dyncg)
+		nufs_put32(v, v->sb, FS_SUN_STATE, 0);
 	v->dirty_sb = 1;
 }
 
