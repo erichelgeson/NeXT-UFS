@@ -164,6 +164,7 @@ struct dirwalk {
 	uint32_t	ino;
 	int		sawdot, sawdotdot;
 	uint32_t	dotdot;
+	uint32_t	nentries;		/* A/UX valence */
 };
 
 static int walk_dir(struct fsck *f, uint32_t ino, uint32_t parent);
@@ -195,6 +196,7 @@ dir_cb(void *arg, uint32_t ino, const char *name, int namlen)
 		return 0;
 	}
 	f->refs[ino]++;
+	w->nentries++;
 	if (f->isdir[ino]) {
 		if (f->parent[ino] != 0)
 			problem(f, "directory inode %u is linked from two"
@@ -203,6 +205,53 @@ dir_cb(void *arg, uint32_t ino, const char *name, int namlen)
 			return walk_dir(f, ino, w->ino);
 	}
 	return 0;
+}
+
+/*
+ * Entries must tile each directory block exactly and none may straddle a
+ * block boundary; NeXT's fsck rejects a directory that breaks either rule.
+ * The block is DEV_BSIZE, so this is also what catches a volume whose
+ * directories are laid out on 512-byte blocks being read as 1024, or back.
+ */
+static void
+check_dir_blocks(struct fsck *f, uint32_t ino, const struct nufs_dinode *d)
+{
+	struct nufs *v = f->v;
+	uint8_t *buf = malloc((size_t)v->dirblksiz);
+	long long off;
+
+	if (buf == NULL)
+		return;
+	for (off = 0; off + v->dirblksiz <= (long long)d->size;
+	    off += v->dirblksiz) {
+		int o = 0;
+
+		if (nufs_file_read(v, d, buf, off, v->dirblksiz) != v->dirblksiz)
+			break;
+		while (o < v->dirblksiz) {
+			int reclen = nufs_get16(v, buf, o + DIR_RECLEN);
+			int namlen = nufs_get16(v, buf, o + DIR_NAMLEN);
+			uint32_t eino = nufs_get32(v, buf, o + DIR_INO);
+
+			if (reclen <= 0 || (reclen & 3) != 0 ||
+			    o + reclen > v->dirblksiz) {
+				problem(f, "directory inode %u has an entry at"
+				    " %lld with reclen %d, which does not fit"
+				    " its %d-byte block", ino, off + o, reclen,
+				    v->dirblksiz);
+				goto out;
+			}
+			if (eino != 0 && NUFS_DIRSIZ(namlen) > reclen) {
+				problem(f, "directory inode %u has an entry at"
+				    " %lld whose name does not fit its reclen",
+				    ino, off + o);
+				goto out;
+			}
+			o += reclen;
+		}
+	}
+out:
+	free(buf);
 }
 
 static int
@@ -217,9 +266,10 @@ walk_dir(struct fsck *f, uint32_t ino, uint32_t parent)
 	f->parent[ino] = parent;
 	if (nufs_inode_read(f->v, ino, &d) != 0)
 		return -1;
-	if (d.size % NUFS_DIRBLKSIZ != 0)
+	if (d.size % f->v->dirblksiz != 0)
 		problem(f, "directory inode %u has size %llu, not a multiple"
-		    " of %d", ino, (unsigned long long)d.size, NUFS_DIRBLKSIZ);
+		    " of %d", ino, (unsigned long long)d.size, f->v->dirblksiz);
+	check_dir_blocks(f, ino, &d);
 	if (nufs_readdir(f->v, &d, dir_cb, &w) != 0) {
 		problem(f, "directory inode %u could not be read: %s", ino,
 		    f->v->err);
@@ -232,6 +282,22 @@ walk_dir(struct fsck *f, uint32_t ino, uint32_t parent)
 	else if (w.dotdot != parent)
 		problem(f, "directory inode %u has \"..\" pointing at %u,"
 		    " expected %u", ino, w.dotdot, parent);
+	/*
+	 * A/UX shows a UFS volume in the Finder, which needs each directory's
+	 * valence to match what is actually in it. Zero is left alone: A/UX
+	 * itself leaves the field unset on directories the Finder has never
+	 * been shown, and filling those in is not this program's business.
+	 */
+	if (f->v->aux && d.valence != 0 && d.valence != w.nentries) {
+		problem(f, "directory inode %u has valence %u, counted %u", ino,
+		    d.valence, w.nentries);
+		if (f->fix) {
+			d.valence = w.nentries;
+			if (nufs_inode_write(f->v, &d) != 0)
+				return -1;
+			f->fixed++;
+		}
+	}
 	return 0;
 }
 
@@ -241,8 +307,10 @@ nufs_fsck(struct nufs *v, int fix)
 	struct fsck f;
 	uint32_t nfrag = (uint32_t)v->size;
 	uint32_t ino;
-	int cg, rc = 0, markclean = 0;
+	int cg, rc = 0, markclean = 0, ncyltot;
 	int32_t tot_ndir = 0, tot_nbfree = 0, tot_nifree = 0, tot_nffree = 0;
+	int *btot;
+	short *bpos;
 
 	memset(&f, 0, sizeof(f));
 	f.v = v;
@@ -278,7 +346,7 @@ nufs_fsck(struct nufs *v, int fix)
 		for (i = 0; i < v->ipg; i++) {
 			struct nufs_dinode d;
 
-			if (!((v->cgbuf[CG_IUSED + (i >> 3)] >> (i & 7)) & 1))
+			if (!((v->cgbuf[v->cg_iused + (i >> 3)] >> (i & 7)) & 1))
 				continue;
 			ino = (uint32_t)(cg * v->ipg + i);
 			if (ino < NUFS_ROOTINO)
@@ -343,26 +411,43 @@ nufs_fsck(struct nufs *v, int fix)
 		}
 	}
 
-	/* Pass 4: free maps and summary counters. */
+	/*
+	 * Pass 4: free maps and summary counters. The per-cylinder tallies are
+	 * sized from the volume, since a dynamic cylinder group carries only
+	 * as many cylinders and rotational positions as its geometry needs.
+	 */
 	printf("** pass 4: free maps and summaries\n");
+	ncyltot = v->cgcpg;
+	btot = calloc((size_t)ncyltot, sizeof(*btot));
+	bpos = calloc((size_t)ncyltot * v->nrpos, sizeof(*bpos));
+	if (btot == NULL || bpos == NULL) {
+		fprintf(stderr, "out of memory\n");
+		free(btot);
+		free(bpos);
+		return -1;
+	}
 	for (cg = 0; cg < v->ncg; cg++) {
 		int ndblk, base, i, nbfree = 0, nffree = 0, ndir = 0, nifree = 0;
 		int badbits = 0;
 		int frsum[NUFS_MAXFRAG];
-		int btot[NUFS_MAXCPG];
-		short bpos[NUFS_MAXCPG][NUFS_NRPOS];
 
 		if (nufs_cg_load(v, cg) != 0)
 			continue;
+		if (v->cgcpg != ncyltot) {
+			problem(&f, "cylinder group %d holds room for %d "
+			    "cylinders, not %d", cg, v->cgcpg, ncyltot);
+			continue;
+		}
 		memset(frsum, 0, sizeof(frsum));
-		memset(btot, 0, sizeof(btot));
-		memset(bpos, 0, sizeof(bpos));
+		memset(btot, 0, (size_t)ncyltot * sizeof(*btot));
+		memset(bpos, 0, (size_t)ncyltot * v->nrpos * sizeof(*bpos));
 		ndblk = (int32_t)nufs_get32(v, v->cgbuf, CG_NDBLK);
 		base = nufs_cgbase(v, cg);
 
 		for (i = 0; i < ndblk; i++) {
 			uint32_t abs = (uint32_t)(base + i);
-			int isfree = (v->cgbuf[CG_FREE + (i >> 3)] >> (i & 7)) & 1;
+			int isfree = (v->cgbuf[v->cg_free + (i >> 3)] >>
+			    (i & 7)) & 1;
 			int shouldfree = abs < nfrag && !bit_get(f.claimed, abs);
 
 			if (isfree != shouldfree) {
@@ -383,14 +468,14 @@ nufs_fsck(struct nufs *v, int fix)
 				if (bit_get(f.claimed, (uint32_t)(base + i + k)))
 					allfree = 0;
 			if (allfree) {
-				int cyl = (i * v->nspf) / v->spc;
-				int rp = (i * v->nspf) % v->spc % v->nsect *
-				    NUFS_NRPOS / v->nsect;
+				int cyl = nufs_cbtocylno(v, i);
+				int rp = nufs_cbtorpos(v, i);
 
 				nbfree++;
-				if (cyl < NUFS_MAXCPG) {
+				if (cyl >= 0 && cyl < ncyltot &&
+				    rp >= 0 && rp < v->nrpos) {
 					btot[cyl]++;
-					bpos[cyl][rp]++;
+					bpos[cyl * v->nrpos + rp]++;
 				}
 				continue;
 			}
@@ -464,18 +549,19 @@ nufs_fsck(struct nufs *v, int fix)
 		CHECK32("cg_cs.cs_nffree", CG_CS + 12, nffree);
 		for (i = 1; i < v->frag; i++)
 			CHECK32("cg_frsum", CG_FRSUM + 4 * i, frsum[i]);
-		for (i = 0; i < NUFS_MAXCPG; i++)
-			CHECK32("cg_btot", CG_BTOT + 4 * i, btot[i]);
-		for (i = 0; i < NUFS_MAXCPG * NUFS_NRPOS; i++) {
-			int got = (int16_t)nufs_get16(v, v->cgbuf, CG_B + 2 * i);
-			int want = bpos[i / NUFS_NRPOS][i % NUFS_NRPOS];
+		for (i = 0; i < ncyltot; i++)
+			CHECK32("cg_btot", v->cg_btot + 4 * i, btot[i]);
+		for (i = 0; i < ncyltot * v->nrpos; i++) {
+			int off = v->cg_b + 2 * i;
+			int got = (int16_t)nufs_get16(v, v->cgbuf, off);
+			int want = bpos[i];
 
 			if (got != want) {
 				problem(&f, "cylinder group %d: cg_b[%d][%d]"
 				    " is %d, counted %d", cg,
-				    i / NUFS_NRPOS, i % NUFS_NRPOS, got, want);
+				    i / v->nrpos, i % v->nrpos, got, want);
 				if (fix) {
-					nufs_put16(v, v->cgbuf, CG_B + 2 * i,
+					nufs_put16(v, v->cgbuf, off,
 					    (uint16_t)want);
 					v->dirty_cg = 1;
 					f.fixed++;
@@ -562,24 +648,21 @@ nufs_fsck(struct nufs *v, int fix)
 		}
 	}
 
-	if (v->sb[FS_STATE] != NUFS_STATE_CLEAN)
-		problem(&f, "fs_state is %d, not clean", v->sb[FS_STATE]);
+	if (!v->aux && !nufs_is_clean(v))
+		problem(&f, "the volume is not marked clean");
 
 	/*
 	 * Marking the volume clean is the whole point of running this after a
 	 * mount was killed, so it happens whenever the state says dirty, not
 	 * only when something else needed repairing.
 	 */
-	if (fix) {
-		int dirty = v->sb[FS_STATE] != NUFS_STATE_CLEAN ||
-		    v->sb[FS_FMOD] != 0;
+	if (fix && !v->aux) {
+		int dirty = !nufs_is_clean(v) || v->sb[FS_FMOD] != 0;
 
 		if (dirty)
 			f.fixed++;
 		if (dirty || f.fixed > 0) {
-			v->sb[FS_FMOD] = 0;
-			v->sb[FS_STATE] = NUFS_STATE_CLEAN;
-			v->dirty_sb = 1;
+			nufs_mark(v, NUFS_STATE_CLEAN);
 			markclean = 1;
 		}
 	}
@@ -600,5 +683,7 @@ nufs_fsck(struct nufs *v, int fix)
 	free(f.ondisk_nlink);
 	free(f.refs);
 	free(f.parent);
+	free(btot);
+	free(bpos);
 	return rc;
 }

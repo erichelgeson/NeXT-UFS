@@ -39,8 +39,11 @@ nufs_label_read(struct nufs *v, struct nufs_label *l)
 	r = l->raw;
 	getstr(l->version, r + DL_VERSION, 4);
 	if (strcmp(l->version, "dlV3") && strcmp(l->version, "dlV2") &&
-	    strcmp(l->version, "NeXT"))
+	    strcmp(l->version, "NeXT")) {
+		/* Not a NeXT disk. Leave nothing behind for info to print. */
+		l->version[0] = '\0';
 		return -1;
+	}
 	v3 = strcmp(l->version, "dlV3") == 0;
 
 	/* The label is always big-endian; it is written by m68k firmware. */

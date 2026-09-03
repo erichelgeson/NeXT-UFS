@@ -1,5 +1,5 @@
 /*
- * Block, fragment and inode allocation for the old 4.3BSD cylinder group.
+ * Block, fragment and inode allocation.
  *
  * Everything here keeps five things in step, which is what makes NeXT's own
  * fsck accept the volume afterwards:
@@ -9,6 +9,10 @@
  *	cg_btot[]	free whole blocks per cylinder
  *	cg_b[][]	free whole blocks per cylinder and rotational position
  *	cg_cs / fs_cs / fs_cstotal	the summary counters
+ *
+ * The four maps are reached through nufs->cg_free and friends, so the same
+ * code serves the static cylinder group NeXT and A/UX use and the dynamic
+ * one SunOS writes, where the group header says where its maps begin.
  */
 #include "nextufs.h"
 #include <errno.h>
@@ -21,7 +25,7 @@
 static int
 frag_isfree(const struct nufs *v, int bno)
 {
-	const uint8_t *map = v->cgbuf + CG_FREE;
+	const uint8_t *map = v->cgbuf + v->cg_free;
 
 	return (map[bno >> 3] >> (bno & 7)) & 1;
 }
@@ -29,13 +33,13 @@ frag_isfree(const struct nufs *v, int bno)
 static void
 frag_setfree(struct nufs *v, int bno)
 {
-	v->cgbuf[CG_FREE + (bno >> 3)] |= (uint8_t)(1 << (bno & 7));
+	v->cgbuf[v->cg_free + (bno >> 3)] |= (uint8_t)(1 << (bno & 7));
 }
 
 static void
 frag_clrfree(struct nufs *v, int bno)
 {
-	v->cgbuf[CG_FREE + (bno >> 3)] &= (uint8_t)~(1 << (bno & 7));
+	v->cgbuf[v->cg_free + (bno >> 3)] &= (uint8_t)~(1 << (bno & 7));
 }
 
 /* Is the whole block starting at cg-relative fragment bno free? */
@@ -50,16 +54,36 @@ block_isfree(const struct nufs *v, int bno)
 	return 1;
 }
 
-static int
-cyl_of(const struct nufs *v, int bno)
+/* cbtocylno(): which cylinder a cg-relative fragment falls in. */
+int
+nufs_cbtocylno(const struct nufs *v, int bno)
 {
+	if (v->spc <= 0)
+		return -1;
 	return bno * v->nspf / v->spc;
 }
 
-static int
-rpos_of(const struct nufs *v, int bno)
+/*
+ * cbtorpos(): which rotational position, out of fs_nrpos. 4.3BSD divides the
+ * track up evenly; SunOS folds in the sector interleave, the per-track skew
+ * and the spare sectors, and reduces to the 4.3 form when a disk has none of
+ * them. NeXT has no such fields -- offsets 132-140 are its fs_sparecon -- so
+ * only a dynamic volume gets the longer formula.
+ */
+int
+nufs_cbtorpos(const struct nufs *v, int bno)
 {
-	return bno * v->nspf % v->spc % v->nsect * NUFS_NRPOS / v->nsect;
+	int trackoff, sectoff;
+
+	if (v->spc <= 0 || v->nsect <= 0)
+		return -1;
+	if (!v->dyncg)
+		return bno * v->nspf % v->spc % v->nsect * v->nrpos / v->nsect;
+	if (v->npsect <= 0)
+		return -1;
+	trackoff = bno * v->nspf % v->spc / v->nsect * v->trackskew;
+	sectoff = bno * v->nspf % v->spc % v->nsect * v->interleave;
+	return (trackoff + sectoff) % v->nsect * v->nrpos / v->npsect;
 }
 
 /* --- summary counters --------------------------------------------------- */
@@ -86,13 +110,13 @@ cs_adjust(struct nufs *v, int cg, int field, int delta)
 static void
 btot_adjust(struct nufs *v, int bno, int delta)
 {
-	int cyl = cyl_of(v, bno), rpos = rpos_of(v, bno);
+	int cyl = nufs_cbtocylno(v, bno), rpos = nufs_cbtorpos(v, bno);
 	int o;
 
-	if (cyl < 0 || cyl >= NUFS_MAXCPG)
+	if (cyl < 0 || cyl >= v->cgcpg || rpos < 0 || rpos >= v->nrpos)
 		return;
-	bump(v, v->cgbuf, CG_BTOT + 4 * cyl, delta);
-	o = CG_B + 2 * (cyl * NUFS_NRPOS + rpos);
+	bump(v, v->cgbuf, v->cg_btot + 4 * cyl, delta);
+	o = v->cg_b + 2 * (cyl * v->nrpos + rpos);
 	nufs_put16(v, v->cgbuf, o,
 	    (uint16_t)((int16_t)nufs_get16(v, v->cgbuf, o) + delta));
 	v->dirty_cg = 1;
@@ -361,16 +385,16 @@ nufs_free_frags(struct nufs *v, int frag, int n)
 static int
 iused_get(const struct nufs *v, int i)
 {
-	return (v->cgbuf[CG_IUSED + (i >> 3)] >> (i & 7)) & 1;
+	return (v->cgbuf[v->cg_iused + (i >> 3)] >> (i & 7)) & 1;
 }
 
 static void
 iused_set(struct nufs *v, int i, int on)
 {
 	if (on)
-		v->cgbuf[CG_IUSED + (i >> 3)] |= (uint8_t)(1 << (i & 7));
+		v->cgbuf[v->cg_iused + (i >> 3)] |= (uint8_t)(1 << (i & 7));
 	else
-		v->cgbuf[CG_IUSED + (i >> 3)] &= (uint8_t)~(1 << (i & 7));
+		v->cgbuf[v->cg_iused + (i >> 3)] &= (uint8_t)~(1 << (i & 7));
 	v->dirty_cg = 1;
 }
 

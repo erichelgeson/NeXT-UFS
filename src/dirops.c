@@ -29,9 +29,9 @@ static int
 read_dirblk(struct nufs *v, const struct nufs_dinode *dir, long long off,
     uint8_t *buf)
 {
-	long n = nufs_file_read(v, dir, buf, off, NUFS_DIRBLKSIZ);
+	long n = nufs_file_read(v, dir, buf, off, v->dirblksiz);
 
-	if (n != NUFS_DIRBLKSIZ) {
+	if (n != v->dirblksiz) {
 		nufs_err(v, "short read of directory block at %lld", off);
 		return -1;
 	}
@@ -42,9 +42,39 @@ static int
 write_dirblk(struct nufs *v, struct nufs_dinode *dir, long long off,
     const uint8_t *buf)
 {
-	if (nufs_file_write(v, dir, buf, off, NUFS_DIRBLKSIZ) != NUFS_DIRBLKSIZ)
+	if (nufs_file_write(v, dir, buf, off, v->dirblksiz) != v->dirblksiz)
 		return -1;
 	return 0;
+}
+
+static int
+count_cb(void *arg, uint32_t ino, const char *name, int namlen)
+{
+	(void)ino;
+	(void)namlen;
+	if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0)
+		(*(uint32_t *)arg)++;
+	return 0;
+}
+
+/*
+ * Bring an A/UX directory's valence back in line with what it now holds.
+ * Counting beats adjusting by one: A/UX leaves the field zero on directories
+ * its Finder has never looked at, so there is not always a count to adjust.
+ */
+static int
+fix_valence(struct nufs *v, struct nufs_dinode *dir)
+{
+	uint32_t n = 0;
+
+	if (!v->aux)
+		return 0;
+	if (nufs_readdir(v, dir, count_cb, &n) != 0)
+		return -1;
+	if (n == dir->valence)
+		return 0;
+	dir->valence = n;
+	return nufs_inode_write(v, dir);
 }
 
 /* Lay out a fresh directory block holding a single entry filling the block. */
@@ -53,9 +83,9 @@ init_dirblk(struct nufs *v, uint8_t *buf, uint32_t ino, const char *name)
 {
 	int namlen = (int)strlen(name);
 
-	memset(buf, 0, NUFS_DIRBLKSIZ);
+	memset(buf, 0, v->dirblksiz);
 	nufs_put32(v, buf, DIR_INO, ino);
-	nufs_put16(v, buf, DIR_RECLEN, NUFS_DIRBLKSIZ);
+	nufs_put16(v, buf, DIR_RECLEN, v->dirblksiz);
 	nufs_put16(v, buf, DIR_NAMLEN, (uint16_t)namlen);
 	memcpy(buf + DIR_NAME, name, (size_t)namlen);
 }
@@ -80,18 +110,18 @@ nufs_dir_add(struct nufs *v, struct nufs_dinode *dir, const char *name,
 		return -1;
 	}
 
-	for (off = 0; off < (long long)dir->size; off += NUFS_DIRBLKSIZ) {
+	for (off = 0; off < (long long)dir->size; off += v->dirblksiz) {
 		int o = 0;
 
 		if (read_dirblk(v, dir, off, buf) != 0)
 			return -1;
-		while (o < NUFS_DIRBLKSIZ) {
+		while (o < v->dirblksiz) {
 			uint32_t eino = nufs_get32(v, buf, o + DIR_INO);
 			int reclen = nufs_get16(v, buf, o + DIR_RECLEN);
 			int elen = nufs_get16(v, buf, o + DIR_NAMLEN);
 			int used = eino == 0 ? 0 : dirsiz(elen);
 
-			if (reclen <= 0 || o + reclen > NUFS_DIRBLKSIZ) {
+			if (reclen <= 0 || o + reclen > v->dirblksiz) {
 				nufs_err(v, "corrupt directory block at %lld",
 				    off);
 				return -1;
@@ -110,7 +140,9 @@ nufs_dir_add(struct nufs *v, struct nufs_dinode *dir, const char *name,
 				    (uint16_t)namlen);
 				memcpy(buf + at + DIR_NAME, name,
 				    (size_t)namlen);
-				return write_dirblk(v, dir, off, buf);
+				if (write_dirblk(v, dir, off, buf) != 0)
+					return -1;
+				return fix_valence(v, dir);
 			}
 			o += reclen;
 		}
@@ -118,7 +150,9 @@ nufs_dir_add(struct nufs *v, struct nufs_dinode *dir, const char *name,
 
 	/* No room anywhere: append a block. */
 	init_dirblk(v, buf, ino, name);
-	return write_dirblk(v, dir, (long long)dir->size, buf);
+	if (write_dirblk(v, dir, (long long)dir->size, buf) != 0)
+		return -1;
+	return fix_valence(v, dir);
 }
 
 int
@@ -127,17 +161,17 @@ nufs_dir_remove(struct nufs *v, struct nufs_dinode *dir, const char *name)
 	uint8_t buf[NUFS_DIRBLKSIZ];
 	long long off;
 
-	for (off = 0; off < (long long)dir->size; off += NUFS_DIRBLKSIZ) {
+	for (off = 0; off < (long long)dir->size; off += v->dirblksiz) {
 		int o = 0, prev = -1;
 
 		if (read_dirblk(v, dir, off, buf) != 0)
 			return -1;
-		while (o < NUFS_DIRBLKSIZ) {
+		while (o < v->dirblksiz) {
 			uint32_t eino = nufs_get32(v, buf, o + DIR_INO);
 			int reclen = nufs_get16(v, buf, o + DIR_RECLEN);
 			int elen = nufs_get16(v, buf, o + DIR_NAMLEN);
 
-			if (reclen <= 0 || o + reclen > NUFS_DIRBLKSIZ) {
+			if (reclen <= 0 || o + reclen > v->dirblksiz) {
 				nufs_err(v, "corrupt directory block at %lld",
 				    off);
 				return -1;
@@ -150,7 +184,9 @@ nufs_dir_remove(struct nufs *v, struct nufs_dinode *dir, const char *name)
 					nufs_put16(v, buf, prev + DIR_RECLEN,
 					    (uint16_t)(nufs_get16(v, buf,
 					    prev + DIR_RECLEN) + reclen));
-				return write_dirblk(v, dir, off, buf);
+				if (write_dirblk(v, dir, off, buf) != 0)
+					return -1;
+				return fix_valence(v, dir);
 			}
 			prev = o;
 			o += reclen;
@@ -168,17 +204,17 @@ dir_set(struct nufs *v, struct nufs_dinode *dir, const char *name, uint32_t ino)
 	long long off;
 	int len = (int)strlen(name);
 
-	for (off = 0; off < (long long)dir->size; off += NUFS_DIRBLKSIZ) {
+	for (off = 0; off < (long long)dir->size; off += v->dirblksiz) {
 		int o = 0;
 
 		if (read_dirblk(v, dir, off, buf) != 0)
 			return -1;
-		while (o < NUFS_DIRBLKSIZ) {
+		while (o < v->dirblksiz) {
 			uint32_t eino = nufs_get32(v, buf, o + DIR_INO);
 			int reclen = nufs_get16(v, buf, o + DIR_RECLEN);
 			int elen = nufs_get16(v, buf, o + DIR_NAMLEN);
 
-			if (reclen <= 0 || o + reclen > NUFS_DIRBLKSIZ) {
+			if (reclen <= 0 || o + reclen > v->dirblksiz) {
 				nufs_err(v, "corrupt directory block at %lld",
 				    off);
 				return -1;
@@ -394,11 +430,11 @@ nufs_mkdir(struct nufs *v, const char *path, uint16_t mode, uint16_t uid,
 	nufs_put16(v, buf, DIR_NAMLEN, 1);
 	buf[DIR_NAME] = '.';
 	nufs_put32(v, buf, dot + DIR_INO, parent.ino);
-	nufs_put16(v, buf, dot + DIR_RECLEN, (uint16_t)(NUFS_DIRBLKSIZ - dot));
+	nufs_put16(v, buf, dot + DIR_RECLEN, (uint16_t)(v->dirblksiz - dot));
 	nufs_put16(v, buf, dot + DIR_NAMLEN, 2);
 	buf[dot + DIR_NAME] = '.';
 	buf[dot + DIR_NAME + 1] = '.';
-	if (nufs_file_write(v, &node, buf, 0, NUFS_DIRBLKSIZ) != NUFS_DIRBLKSIZ)
+	if (nufs_file_write(v, &node, buf, 0, v->dirblksiz) != v->dirblksiz)
 		return -1;
 
 	if (nufs_dir_add(v, &parent, name, ino) != 0)
@@ -423,7 +459,7 @@ nufs_symlink(struct nufs *v, const char *target, const char *path,
 	if (ino == 0)
 		return -1;
 	init_inode(v, &node, ino, (uint16_t)(S_LNK_ | 0777), uid, gid);
-	if (len <= NUFS_MAXFASTLINK) {
+	if (len <= NUFS_MAXFASTLINK && !v->aux) {	/* A/UX has no fastlink */
 		node.flags |= NUFS_IC_FASTLINK;
 		memcpy(node.symlink, target, len);
 		node.size = len;
@@ -602,12 +638,12 @@ nufs_rename(struct nufs *v, const char *from, const char *to, int flags)
 		uint8_t buf[NUFS_DIRBLKSIZ];
 		int dot = dirsiz(1);
 
-		if (nufs_file_read(v, &node, buf, 0, NUFS_DIRBLKSIZ) !=
-		    NUFS_DIRBLKSIZ)
+		if (nufs_file_read(v, &node, buf, 0, v->dirblksiz) !=
+		    v->dirblksiz)
 			return -1;
 		nufs_put32(v, buf, dot + DIR_INO, todir.ino);
-		if (nufs_file_write(v, &node, buf, 0, NUFS_DIRBLKSIZ) !=
-		    NUFS_DIRBLKSIZ)
+		if (nufs_file_write(v, &node, buf, 0, v->dirblksiz) !=
+		    v->dirblksiz)
 			return -1;
 	}
 

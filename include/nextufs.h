@@ -34,7 +34,7 @@
 #define NUFS_NIADDR		3
 #define NUFS_MAXFASTLINK	60		/* (NDADDR+NIADDR)*4 */
 #define NUFS_DINODE_SIZE	128
-#define NUFS_DIRBLKSIZ		1024
+#define NUFS_DIRBLKSIZ		1024		/* the largest; see nufs->dirblksiz */
 #define NUFS_MAXNAMLEN		255
 #define NUFS_IC_FASTLINK	0x0001		/* di_flags: link is inline */
 
@@ -42,6 +42,14 @@
 #define NUFS_STATE_CLEAN	1
 #define NUFS_STATE_DIRTY	2
 #define NUFS_STATE_CORRUPTED	3
+
+/* The same byte on SunOS is fs_clean, and it counts the other way: zero is
+ * the volume that needs checking. It is only believed when the fs_state
+ * word agrees, which is why FSOKAY exists. From SunOS 4.1.4 sys/ufs/fs.h. */
+#define NUFS_FSACTIVE		0x00		/* in use, may not be clean */
+#define NUFS_FSCLEAN		0x01		/* clean and unmounted */
+#define NUFS_FSSTABLE		0x02		/* clean, still mounted */
+#define NUFS_FSOKAY		0x7c269d38	/* fs_state = FSOKAY - fs_time */
 
 /* fs_optim */
 #define NUFS_OPTTIME		0
@@ -82,6 +90,9 @@
 #define FS_INOPB	120
 #define FS_NSPF		124
 #define FS_OPTIM	128
+#define FS_NPSECT	132		/* sectors/track including spares */
+#define FS_INTERLEAVE	136
+#define FS_TRACKSKEW	140
 #define FS_CSADDR	152
 #define FS_CSSIZE	156
 #define FS_CGSIZE	160
@@ -102,8 +113,19 @@
 #define FS_CSP		728		/* long[32], in-core only */
 #define FS_CPC		856
 #define FS_POSTBL	860		/* short[32][8] */
+#define FS_SPARECON	1116		/* long[56] */
+#define FS_SUN_STATE	(FS_SPARECON + 55 * 4)	/* dynamic-layout fs_state */
+#define FS_POSTBLFORMAT	1356		/* only in the dynamic layout */
+#define FS_NRPOS	1360
+#define FS_POSTBLOFF	1364
+#define FS_ROTBLOFF	1368
 #define FS_MAGIC	1372
 #define FS_ROTBL	1376
+
+/* fs_postblformat. The old layout has no such field; these bytes are
+ * rotation table data there, so the cylinder group is what settles it. */
+#define NUFS_42POSTBLFMT	(-1)
+#define NUFS_DYNAMICPOSTBLFMT	1
 
 /* ---- cylinder group field byte offsets (struct cg; the old static form) -- */
 #define CG_TIME		8
@@ -122,6 +144,17 @@
 #define CG_MAGIC	980
 #define CG_FREE		984		/* u_char[], free frag bitmap */
 
+/* The dynamic form, which SunOS and every later BSD write. cg_magic moves to
+ * the front and the four maps move to offsets the header itself carries, so
+ * a group is only as big as its own geometry needs. Everything between
+ * cg_time and cg_frsum stays where it was. */
+#define CG_DYN_MAGIC	4
+#define CG_DYN_BTOTOFF	84
+#define CG_DYN_BOFF	88
+#define CG_DYN_IUSEDOFF	92
+#define CG_DYN_FREEOFF	96
+#define CG_DYN_NEXTFREEOFF 100
+
 /* ---- inode field byte offsets (struct icommon) -------------------------- */
 #define DI_MODE		0		/* u_short */
 #define DI_NLINK	2		/* short */
@@ -137,6 +170,31 @@
 #define DI_FLAGS	100
 #define DI_BLOCKS	104
 #define DI_GEN		108
+
+/* ---- A/UX -----------------------------------------------------------------
+ * Apple's UNIX uses the same 4.3BSD filesystem and keeps its Macintosh
+ * metadata in the nine long words 4.3BSD leaves spare. A/UX's own
+ * <sys/xstat.h> exposes them as `long st_xinfo[XINFOSIZ]` with XINFOSIZ 9,
+ * overlaid by a union: one shape for a file, another for a directory. The
+ * nine are the high half of the size, the three timestamp spares, di_flags
+ * and di_spare[4]. See NeXT-UFS-Spec.md §12.3.
+ */
+#define DI_FDRLEN	DI_SIZE		/* file: resource fork length */
+#define DI_VALENCE	DI_SIZE		/* directory: entry count. Same word. */
+#define DI_FDTYPE	20		/* ic_atspare: Finder type */
+#define DI_FDCREATOR	28		/* ic_mtspare: Finder creator */
+#define DI_FDLOCATION	36		/* ic_ctspare: icon position */
+#define DI_FDMDDAT	DI_FLAGS	/* file: Finder modification date */
+#define DI_AUXID	DI_FLAGS	/* directory: Macintosh directory ID */
+#define DI_FDFLDR	112		/* file: Finder folder number */
+#define DI_FDFLAGS	114		/* file: Finder flags, u_short */
+#define DI_FDSCRIPT	116		/* file: script, xflags and vf_flags */
+#define DI_FDCRDAT	120		/* file: creation date. dir: frMdDat */
+#define DI_FDLEN	124		/* file: data fork length */
+#define NUFS_MACROOTID	2		/* HFS fsRtDirID: A/UX gives its root
+					 * directory the same number */
+#define NUFS_FDALIAS	0x8000		/* fdFlags: the file is an alias */
+#define NUFS_FDINITED	0x0100		/* fdFlags: the Finder has seen it */
 
 /* ---- directory entry ---------------------------------------------------- */
 #define DIR_INO		0		/* u_long */
@@ -226,11 +284,54 @@ struct nufs_dinode {
 	uint16_t	uid, gid;
 	uint64_t	size;
 	uint32_t	atime, mtime, ctime;
+	/*
+	 * SunOS stores each timestamp as a struct timeval, so the word after
+	 * each second holds its microseconds. NeXT leaves those words spare
+	 * and A/UX keeps Finder data in them, so this is zero on both.
+	 */
+	uint32_t	ausec, musec, cusec;
 	int32_t		db[NUFS_NDADDR];
 	int32_t		ib[NUFS_NIADDR];
 	uint32_t	flags, blocks, gen;
 	char		symlink[NUFS_MAXFASTLINK + 1];
+
+	/*
+	 * A/UX only, zero elsewhere. Two of these words mean one thing on a
+	 * directory and another on a file, because A/UX overlays two structs
+	 * on the same nine spare longs.
+	 */
+	uint32_t	valence;		/* directory: entry count, less
+						 * . and .. . file: fdRLen, the
+						 * resource fork length */
+	char		fdtype[5];		/* Finder type and creator */
+	char		fdcreator[5];
+	uint32_t	auxid;			/* the word 4.3BSD calls di_flags:
+						 * directory: Macintosh directory
+						 * ID. file: fdMdDat, the Finder's
+						 * modification date */
+	uint32_t	fdlen;			/* file: data fork length. A file
+						 * with a resource fork is stored
+						 * as AppleSingle, so this is not
+						 * di_size for one of those */
+	uint32_t	fdcrdat;		/* file: creation date */
+	uint16_t	fdflags;		/* file: Finder flags */
 };
+
+#define NUFS_MAXAPM	16
+
+struct nufs_apm_part {
+	uint32_t	start, size;		/* in blocksize units */
+	char		name[33];
+	char		type[33];
+};
+
+struct nufs_apm {
+	int	valid;
+	int	n;
+	int	blocksize;
+	struct nufs_apm_part part[NUFS_MAXAPM];
+};
+#define NUFS_APM_BLKMAX	2048
 
 struct nufs {
 	FILE		*f;
@@ -240,6 +341,10 @@ struct nufs {
 	long long	partoff;		/* byte offset of the partition */
 	int		partno;			/* -1 if opened without a label */
 	struct nufs_label label;
+	struct nufs_apm	apm;			/* A/UX: the Apple Partition Map */
+	int		apmno;			/* map entry in use, -1 if none */
+	int		aux;			/* volume carries A/UX metadata */
+	int		dyncg;			/* dynamic cylinder groups */
 
 	uint8_t		sb[NUFS_SBSIZE];
 	int		dirty_sb;
@@ -250,7 +355,9 @@ struct nufs {
 	int	bshift, fshift, fragshift, fsbtodb, sbsize;
 	int	csmask, csshift, nindir, inopb, nspf, optim;
 	int	csaddr, cssize, cgsize, ntrak, nsect, spc, ncyl, cpg, ipg, fpg;
-	int	cpc;
+	int	cpc, npsect, interleave, trackskew;
+	int	dirblksiz;		/* directory block: fs_fsize >> fs_fsbtodb */
+	int	nrpos;			/* rotational positions; 8 when static */
 
 	uint8_t		*csum;			/* fs_cssize bytes, on-disk order */
 	int		dirty_csum;
@@ -258,6 +365,13 @@ struct nufs {
 	int		cgno;			/* cylinder group in the buffer */
 	uint8_t		*cgbuf;
 	int		dirty_cg;
+	/*
+	 * Where the four maps sit inside cgbuf. Constants in the static
+	 * layout; read out of the group header in the dynamic one, which is
+	 * the whole of the difference. cgcpg is how many cylinders cg_btot
+	 * has room for.
+	 */
+	int		cg_btot, cg_b, cg_iused, cg_free, cgcpg;
 
 	char		err[256];
 	int		errnum;			/* errno for the last failure */
@@ -278,12 +392,18 @@ int	nufs_label_read(struct nufs *, struct nufs_label *);
 uint16_t nufs_label_checksum(const uint8_t *buf, int limit);
 void	nufs_label_print(const struct nufs_label *, FILE *);
 
+/* apm.c */
+int	nufs_apm_read(struct nufs *, struct nufs_apm *);
+int	nufs_apm_is_unix(const struct nufs_apm_part *);
+void	nufs_apm_print(const struct nufs_apm *, FILE *);
+
 /* fs.c */
 struct nufs *nufs_open(const char *path, const char *partspec, int rw, char *errbuf, size_t errlen);
 void	nufs_close(struct nufs *);
 int	nufs_flush(struct nufs *);
 int	nufs_sync(struct nufs *);
 int	nufs_mark(struct nufs *, int state);
+int	nufs_is_clean(const struct nufs *);
 long long nufs_fragoff(const struct nufs *, int frag);
 int	nufs_read_frags(struct nufs *, int frag, int nfrags, void *buf);
 int	nufs_write_frags(struct nufs *, int frag, int nfrags, const void *buf);
@@ -292,6 +412,8 @@ int	nufs_cgstart(const struct nufs *, int cg);
 
 /* alloc.c */
 int	nufs_cgbase(const struct nufs *, int cg);
+int	nufs_cbtocylno(const struct nufs *, int bno);
+int	nufs_cbtorpos(const struct nufs *, int bno);
 int	nufs_alloc_block(struct nufs *, int prefcg);
 int	nufs_alloc_frags(struct nufs *, int prefcg, int nfrags);
 int	nufs_free_frags(struct nufs *, int frag, int nfrags);
@@ -300,6 +422,7 @@ int	nufs_free_inode(struct nufs *, uint32_t ino, int isdir);
 void	nufs_touch(struct nufs *);
 
 /* inode.c */
+int	nufs_detect_aux(struct nufs *);
 int	nufs_inode_read(struct nufs *, uint32_t ino, struct nufs_dinode *);
 int	nufs_inode_write(struct nufs *, const struct nufs_dinode *);
 int	nufs_bmap(struct nufs *, const struct nufs_dinode *, int lbn, int *frag);

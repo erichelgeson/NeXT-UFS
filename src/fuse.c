@@ -681,7 +681,8 @@ usage(void)
 "usage: nextufs-fuse [-o option,...] <image> <mountpoint>\n"
 "\n"
 "  -o ro            mount read-only\n"
-"  -o part=a        pick a partition from the NeXT disk label\n"
+"  -o part=a        pick a partition: a NeXT label letter, or an A/UX\n"
+"                   Apple Partition Map number or name\n"
 "  -o force         mount a volume that was not cleanly unmounted\n"
 "  -o sync          flush after every write\n"
 "  -o uid=,gid=,umask=   show every file as this owner and mode\n"
@@ -748,7 +749,8 @@ main(int argc, char **argv)
 		fprintf(stderr, "nextufs-fuse: %s: %s\n", o.image, err);
 		return 1;
 	}
-	if (!readonly && V->sb[FS_STATE] != NUFS_STATE_CLEAN && !o.force) {
+	/* A/UX has no clean marker to check; see nufs_mark(). */
+	if (!readonly && !V->aux && !nufs_is_clean(V) && !o.force) {
 		fprintf(stderr, "nextufs-fuse: %s was not cleanly unmounted.\n"
 		    "Run `nextufs %s fsck -y`, or mount it with -o force or "
 		    "-o ro.\n", o.image, o.image);

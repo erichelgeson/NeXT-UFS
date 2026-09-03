@@ -15,6 +15,9 @@ usage(void)
 	fprintf(stderr,
 "usage: %s [-p part] <image> <command> [args]\n"
 "\n"
+"  -p is a NeXT partition letter (a..h), or on an A/UX disk a partition\n"
+"  number or name from the Apple Partition Map.\n"
+"\n"
 "  info                    show the disk label and filesystem geometry\n"
 "  ls [-l] [path]          list a directory\n"
 "  cat <path>              write a file to stdout\n"
@@ -172,12 +175,22 @@ cmd_info(struct nufs *v)
 {
 	if (v->label.valid || v->label.version[0] != '\0')
 		nufs_label_print(&v->label, stdout);
+	if (v->apm.valid)
+		nufs_apm_print(&v->apm, stdout);
 	if (v->partno >= 0)
-		printf("using    partition %c at byte offset 0x%llx\n",
+		printf("using     partition %c at byte offset 0x%llx\n",
 		    'a' + v->partno, (unsigned long long)v->partoff);
-	else
-		printf("using    filesystem at byte offset 0x%llx (no label)\n",
+	else if (v->apmno >= 0)
+		printf("using     partition %d \"%s\" at byte offset 0x%llx\n",
+		    v->apmno + 1, v->apm.part[v->apmno].name,
 		    (unsigned long long)v->partoff);
+	else
+		printf("using     filesystem at byte offset 0x%llx (no label)\n",
+		    (unsigned long long)v->partoff);
+	printf("variant   %s\n", v->dyncg ? "SunOS or a later BSD"
+	    " (dynamic cylinder groups)" :
+	    v->aux ? "A/UX (Macintosh metadata in the spare inode fields)" :
+	    "NeXT");
 	printf("byteorder %s\n", v->be ? "big-endian" : "little-endian");
 	printf("geometry  %d frags of %d bytes, block %d, %d frags/block\n",
 	    v->size, v->fsize, v->bsize, v->frag);
@@ -193,10 +206,14 @@ cmd_info(struct nufs *v)
 	    (int32_t)nufs_get32(v, v->sb, FS_CSTOTAL + 4),
 	    (int32_t)nufs_get32(v, v->sb, FS_CSTOTAL + 8),
 	    (int32_t)nufs_get32(v, v->sb, FS_CSTOTAL + 12));
-	printf("state     fmod %d state %d (%s), last written %u\n",
-	    v->sb[FS_FMOD], v->sb[FS_STATE],
-	    v->sb[FS_STATE] == NUFS_STATE_CLEAN ? "clean" : "not clean",
-	    nufs_get32(v, v->sb, FS_TIME));
+	if (v->aux)			/* A/UX records nothing either way */
+		printf("state     last written %u\n",
+		    nufs_get32(v, v->sb, FS_TIME));
+	else
+		printf("state     fmod %d %s %d (%s), last written %u\n",
+		    v->sb[FS_FMOD], v->dyncg ? "fs_clean" : "fs_state",
+		    v->sb[FS_STATE], nufs_is_clean(v) ? "clean" : "not clean",
+		    nufs_get32(v, v->sb, FS_TIME));
 	printf("mounted   %s\n", (const char *)v->sb + FS_FSMNT);
 }
 
@@ -502,10 +519,39 @@ main(int argc, char **argv)
 		printf("links   %d\n", d.nlink);
 		printf("owner   %u:%u\n", d.uid, d.gid);
 		printf("size    %llu\n", (unsigned long long)d.size);
+		if (v->aux) {
+			/*
+			 * Two of these words mean one thing on a directory and
+			 * another on a file; see NeXT-UFS-Spec.md §12.3.
+			 */
+			if ((d.mode & 0170000) == 0040000) {
+				printf("valence %u\n", d.valence);
+				printf("mac dir %u\n", d.auxid);
+			} else {
+				printf("forks   data %u, resource %u\n",
+				    d.fdlen, d.valence);
+				if (d.auxid != 0 || d.fdcrdat != 0)
+					printf("mac date created %u, modified"
+					    " %u\n", d.fdcrdat, d.auxid);
+				if (d.fdflags != 0)
+					printf("fdflags 0x%04x%s\n", d.fdflags,
+					    (d.fdflags & NUFS_FDALIAS) ?
+					    " (alias)" : "");
+			}
+			if (d.fdtype[0] != '\0' || d.fdcreator[0] != '\0')
+				printf("finder  type \"%s\" creator \"%s\"\n",
+				    d.fdtype, d.fdcreator);
+		}
 		printf("blocks  %u\n", d.blocks);
 		printf("flags   0x%x%s\n", d.flags,
 		    (d.flags & NUFS_IC_FASTLINK) ? " (fastlink)" : "");
-		printf("times   a %u m %u c %u\n", d.atime, d.mtime, d.ctime);
+		if (v->dyncg)		/* SunOS keeps a whole timeval */
+			printf("times   a %u.%06u m %u.%06u c %u.%06u\n",
+			    d.atime, d.ausec, d.mtime, d.musec,
+			    d.ctime, d.cusec);
+		else
+			printf("times   a %u m %u c %u\n", d.atime, d.mtime,
+			    d.ctime);
 		for (i = 0; i < NUFS_NDADDR; i++)
 			if (d.db[i] != 0)
 				printf("db[%d]   %d\n", i, d.db[i]);

@@ -18,7 +18,7 @@ No dependencies. The binary lands in `build/nextufs`.
 
 ## Use
 
-    nextufs <image> <command> [args]        # add -p b to pick a partition
+    nextufs <image> <command> [args]        # -p picks a partition
 
     info                    the disk label and filesystem geometry
     ls [path]               list a directory
@@ -99,11 +99,85 @@ Structure layouts came from NeXT's own headers, which are in
 `docs/next-headers/` — extracted from an OPENSTEP 4.2 disk image by an earlier
 version of this tool.
 
+## Also supports
+
+**A/UX.** Apple's UNIX for the Macintosh put the same 4.3BSD filesystem on
+disk, so every command above works on an A/UX image. Give it the whole disk:
+it reads the Apple Partition Map and takes the root slice. `-p 5` or
+`-p 'UNIX Root&Usr slice 0'` picks a different one.
+
+A/UX keeps Macintosh metadata in the nine long words 4.3BSD leaves spare, and
+those nine mean one thing on a file and another on a directory. Four of the
+differences change how a volume must be read or written:
+
+- Directories are built from 512-byte blocks rather than 1024.
+- A directory's entry count lives in the unused top half of its size. Anything
+  that reads the size as one 64-bit number reports every directory as
+  gigabytes long. `nextufs` keeps the count right as you add and remove
+  entries, and `fsck` reports one that has drifted.
+- The word NeXT uses for flags is a Macintosh directory ID here, so the
+  fast-symlink bit it holds means nothing. A/UX symlinks always store their
+  target in a data block.
+- There is no clean/dirty marker. A volume is never refused as unclean, and
+  mounting one writes nothing to record it.
+
+The Finder keeps its own copy of a file's length and modification date, and it
+shows those rather than what UNIX holds. `nextufs` moves both along when it
+changes a file, so a file edited here does not turn up in the Finder described
+as something it no longer is. A file the Finder has never seen is left alone,
+the way A/UX itself fills these in only once it has looked.
+
+`stat` shows what the volume holds for each: the Finder type and creator, the
+fork lengths and dates on a file, the entry count and directory ID on a
+directory.
+
+A file with a resource fork is stored as AppleSingle, so the UNIX file is a
+wrapper holding a header and both forks. `nextufs` reads and writes the
+wrapper as the bytes it is and does not take the forks apart.
+
+`mkfs` builds NeXT volumes only.
+
+**SunOS.** SunOS uses the same inodes and directory entries, so every command
+above works on a SunOS volume. What differs is the cylinder group. Sun moved to
+the dynamic form, where `cg_magic` sits at the front of the group and each
+group states where its own four maps begin. `nextufs` tells the two apart by
+reading the group, which is how SunOS itself does it, and takes the map
+offsets from the group it is working in.
+
+Two smaller differences:
+
+- The byte NeXT uses for `fs_state` is Sun's `fs_clean`, and it counts the
+  other way: zero is the volume that needs checking. Sun believes that byte
+  only while a second word vouches for it, so `nextufs` reads both and
+  `fsck -y` sets both.
+- Timestamps are a whole `struct timeval`. Each second is followed by its
+  microseconds, in a word NeXT leaves empty. `stat` shows them.
+
+Checked against the SunOS 4.1.1 sun3 install miniroot and against SunOS
+4.1.4's own `sys/ufs/fs.h`. Later BSDs and Solaris write the same cylinder
+group, so they should work the same way, and no version past SunOS 4 has been
+tried. Solaris 2 is the one to be careful with: it moved to a 32-bit uid and
+gid kept in fields SunOS 4 leaves empty, and nothing here knows about that.
+
 ## Verification
 
 `tests/fuse.sh` mounts an image and drives the driver through the same ground
 from the other side, then checks the volume the kernel left behind. It skips
 itself where there is no `/dev/fuse`.
+
+`tests/aux.sh <image>` does the same against a real A/UX disk, and adds the
+checks that are specific to it: the partition map, the entry count, 512-byte
+directory blocks, and the Finder fields, including that a file the Finder has
+never seen gets none invented for it. Because a snapshot of a live A/UX disk is
+never a clean volume, it holds the tool to leaving the problem count no worse
+than it found it. It skips itself when there is no image to run on.
+
+`tests/sun.sh <image>` reads a SunOS volume and writes to a copy, running
+`fsck` after every step. That is the check that matters for SunOS: `fsck`
+rebuilds every free map, per-cylinder block total and rotational-position
+count from the inodes alone, so agreeing with the volume afterwards means each
+one was found and updated where SunOS keeps it. It names where to get the
+image it wants.
 
 `tests/stress.sh <image>` writes files of every interesting size, fills a
 directory past one block, makes and removes trees, and checks consistency at
@@ -130,3 +204,6 @@ compares.
 - `fsck` repairs accounting: free maps, summary counters and link counts. It
   reports duplicate or out-of-range blocks rather than trying to fix them.
 - Extended attributes are not supported.
+- `mkfs` makes NeXT volumes. There is no A/UX or SunOS equivalent.
+- Little-endian volumes are handled but have never been run against a real
+  NeXTSTEP for Intel disk.

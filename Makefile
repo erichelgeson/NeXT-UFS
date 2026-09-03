@@ -2,8 +2,8 @@ CC	?= cc
 CFLAGS	?= -O2 -g
 CFLAGS	+= -std=c99 -Wall -Wextra -Werror -Iinclude -D_GNU_SOURCE
 OBJDIR	= build
-LIBSRCS	= src/util.c src/label.c src/fs.c src/alloc.c src/write.c src/inode.c \
-	  src/dir.c src/dirops.c src/mkfs.c src/fsck.c src/path.c
+LIBSRCS	= src/util.c src/label.c src/apm.c src/fs.c src/alloc.c src/write.c \
+	  src/inode.c src/dir.c src/dirops.c src/mkfs.c src/fsck.c src/path.c
 LIBOBJS	= $(LIBSRCS:src/%.c=$(OBJDIR)/%.o)
 BIN	= $(OBJDIR)/nextufs
 

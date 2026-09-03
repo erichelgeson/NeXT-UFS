@@ -15,14 +15,14 @@ nufs_readdir(struct nufs *v, const struct nufs_dinode *dp, nufs_dir_cb cb,
 		nufs_errc(v, ENOTDIR, "inode %u is not a directory", dp->ino);
 		return -1;
 	}
-	buf = malloc(NUFS_DIRBLKSIZ);
+	buf = malloc(v->dirblksiz);
 	if (buf == NULL) {
 		nufs_errc(v, ENOMEM, "out of memory");
 		return -1;
 	}
-	for (off = 0; off < (long long)dp->size; off += NUFS_DIRBLKSIZ) {
+	for (off = 0; off < (long long)dp->size; off += v->dirblksiz) {
 		int o = 0;
-		long got = nufs_file_read(v, dp, buf, off, NUFS_DIRBLKSIZ);
+		long got = nufs_file_read(v, dp, buf, off, v->dirblksiz);
 
 		if (got < 0) {
 			rc = -1;

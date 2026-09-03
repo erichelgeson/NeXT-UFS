@@ -457,6 +457,11 @@ the entries' `d_reclen` values tile it exactly, the last entry's `d_reclen`
 running to the end of the block. **No entry may straddle a block boundary.** A
 directory's size is always a multiple of 1024.
 
+`DIRBLKSIZ` is `DEV_BSIZE`, which works out as `fs_fsize >> fs_fsbtodb`. That
+is 1024 on every NeXT volume, whose `fs_fsbtodb` is 0, and it is worth deriving
+rather than hardcoding: A/UX uses the same filesystem with 512-byte blocks
+(§12.2).
+
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 | `d_ino` — 0 marks a free slot |
@@ -524,6 +529,11 @@ Exit status 0 means clean; 8 means it wanted to change something.
   *This tool handles it but it has not been tested against a real Intel volume.*
 - **CD-ROM** — `fs_fsize` 2048, and Linux has a separate `ufstype=nextstep-cd`
   for it. The structures are otherwise the same. *Untested here.*
+- **A/UX** — the same filesystem on a Macintosh disk, with an Apple Partition
+  Map, 512-byte directory blocks and Macintosh metadata in the spare inode
+  fields. §12.
+- **SunOS** — the same inodes and directory entries, and a different cylinder
+  group. §13.
 - Linux's `ufstype=openstep` selects the 4.4BSD directory, inode and cylinder
   group layouts. Neither reference OPENSTEP volume uses them: HD00 is old-format
   throughout, and `ufstype=nextstep` is the correct choice for it.
@@ -541,7 +551,244 @@ Exit status 0 means clean; 8 means it wanted to change something.
 
 ---
 
-## 12. Sources
+## 12. A/UX
+
+Apple's UNIX puts the same filesystem on a Macintosh disk: `fs_magic`
+`0x00011954`, big-endian, superblock at partition + 8192, and every `struct
+fs`, `struct icommon` and directory entry field at the offset §3, §5 and §7
+give. What differs is the packaging around it and the Macintosh metadata A/UX
+keeps in fields 4.3BSD left spare.
+
+Everything below was read off one reference volume, `AUX_3_1_1GB.dsk`, an A/UX
+3.1.1 install. Where something is inferred rather than confirmed it says so.
+
+### 12.1 Finding the filesystem
+
+There is no NeXT label. Block 0 is Apple's driver descriptor (`ER`), and from
+block 1 there is an array of one-block partition entries (`PM`), each carrying
+the count of entries in the whole map:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 2 | `pmSig`, `"PM"` |
+| 4 | 4 | `pmMapBlkCnt`, entries in the map |
+| 8 | 4 | `pmPyPartStart`, first block |
+| 12 | 4 | `pmPartBlkCnt`, length in blocks |
+| 16 | 32 | `pmPartName` |
+| 48 | 32 | `pmParType` |
+
+A UNIX slice is typed `Apple_UNIX_SVR2`, and a disk normally has three: the
+root, swap, and a small "Eschatology" crash-recovery area. Only one of them
+holds a filesystem, so picking the largest one whose superblock magic checks
+out is what finds the root.
+
+Do not fall back to scanning for the magic on this disk. There is a second
+`0x00011954` 4096 bytes before the real superblock, inside the root slice's
+boot area, and a scan finds that one first and lands the partition offset 4096
+bytes low.
+
+### 12.2 Directory blocks are 512 bytes
+
+`DIRBLKSIZ` is `DEV_BSIZE`, which the geometry gives up as
+`fs_fsize >> fs_fsbtodb`: 1024 on NeXT hardware (§7), 512 on A/UX, whose
+`fs_fsbtodb` is 1 for its 512-byte sectors. The tiling rule is unchanged, so
+the boundary a `d_reclen` must stop at is half as far apart. Reading an A/UX
+volume as if its directories were 1024-byte blocks misses it: every entry
+still chains correctly, and the damage only appears on a write.
+
+`di_blocks` follows the same unit, counting 512-byte sectors rather than
+fragments. `nfrags << fs_fsbtodb` covers both.
+
+### 12.3 The spare inode fields
+
+A/UX documents these itself, in two headers that ship on the volume:
+`/usr/include/sys/stat.h` and `/usr/include/sys/xstat.h`. `stat.h` defines
+`XINFOSIZ` as 9 and gives `struct xstat` a `long st_xinfo[XINFOSIZ]`;
+`xstat.h` overlays that array with a union, one shape for a file and another
+for a directory:
+
+```c
+union xstat_finfo {
+	struct {
+		time_t	fdMdDat;	dword	fdType;		dword	fdCreator;
+		Point	fdLocation;	word	fdFldr;		word	fdFlags;
+		byte	fdScript;	byte	fdXFlags;	finfo_flags vf_flags;
+		time_t	fdCrDat;	dword	fdLen;		dword	fdRLen;
+	} fl;
+	struct {
+		CNID	dirID;		word	frView;		uword	frFlags;
+		Rect	frRect;		Point	frLocation;	Point	frScroll;
+		time_t	frMdDat;	byte	frScript;	byte	frXFlags;
+		dword	unused;		word	frNmFls;
+	} dr;
+	long	size[XINFOSIZ];
+};
+```
+
+Nine longs, and the inode has exactly nine spare ones: the high half of the
+quad size, the three timestamp spares, `di_flags`, and `di_spare[4]`.
+
+| Offset | 4.3BSD | A/UX on a file | A/UX on a directory |
+|---|---|---|---|
+| 8 | `di_size`, high half | `fdRLen`, resource fork length | `frNmFls`, the valence |
+| 20 | `di_atspare` | `fdType`, e.g. `TEXT`, `BIN ` | — |
+| 28 | `di_mtspare` | `fdCreator`, e.g. `A/UX`, `MACS` | — |
+| 36 | `di_ctspare` | `fdLocation`, the icon position | — |
+| 100 | `di_flags` | `fdMdDat`, Finder modification date | `dirID` |
+| 112 | `di_spare[0]` | `fdFldr` and `fdFlags` | — |
+| 116 | `di_spare[1]` | `fdScript`, `fdXFlags`, `vf_flags` | — |
+| 120 | `di_spare[2]` | `fdCrDat`, creation date | `frMdDat` |
+| 124 | `di_spare[3]` | `fdLen`, data fork length | zero |
+
+Note that `ufs/inode.h` on the same volume still calls `ic_spare[4]`
+"reserved, currently unused". The UFS kernel does not know about any of this;
+the Finder layer above it writes the words.
+
+Every entry above was checked against the reference volume. `fdFlags` at 114
+decodes as Finder flags on every file that has any: `kHasBundle |
+kHasBeenInited` on 26 applications, bare `kHasBeenInited` on documents, and
+`kIsAlias | kHasBeenInited` on the one alias. `fdMdDat` equals `di_mtime` on
+180 of the 183 files that carry a date, and `fdCrDat` is at or before it on
+the same 180. All 44 directories with a `dirID` have zero at 124 and
+`frMdDat` equal to `di_mtime`.
+
+**Valence** is a directory's entry count, not counting `.` and `..`. `/bin`
+holds 144 entries and its high half reads 144. Read as the top of a 64-bit
+size it makes every directory look like gigabytes, which is the first thing to
+go wrong on an A/UX volume. A/UX leaves it zero on directories its Finder has
+never been shown, so zero means unknown rather than empty.
+
+**The fork lengths.** A file with a resource fork is stored as AppleSingle:
+the UNIX file holds a header, the fork lengths and both forks, so `di_size`
+is the whole wrapper and `fdLen` is only the data fork inside it. A file with
+no resource fork is stored plainly and `fdLen` equals `di_size`. That is what
+makes the two distinguishable from the inode alone, and it is why `fdLen` is
+only followed when it already agreed with the size.
+
+The alias on the reference volume proves the pair. Its `di_size` is 1529, its
+`fdLen` is 0 and its `fdRLen` is 535, and the AppleSingle header inside it
+reads:
+
+```
+magic 0x00051600  home 'Macintosh'  entries 2
+   Finder info    id 9  offset 224  length  32
+   resource fork  id 2  offset 512  length 535
+```
+
+No data fork entry at all, and a 535-byte resource fork. Checked across the
+whole volume, all 182 files that carry Finder data agree, once the `%name`
+AppleDouble sidecars are read the way A/UX means them: a sidecar holds the
+Finder information of its partner, so `%setfile` has `fdLen` 109764, which is
+the length of `setfile`.
+
+**`di_flags` is not `di_flags`.** The root directory reads 2, which is the
+Macintosh root directory ID, and the next directories created read 390, 391,
+392 in order. A plain file has `fdMdDat` there instead. Two things follow:
+`IC_FASTLINK` cannot be read out of this word -- real directories have the
+bit set, and honouring it would put a symlink target over their block list --
+and A/UX has no fast symlink at all. Every symlink on the reference volume
+stores its target in a data block, whatever its length.
+
+### 12.4 No clean marker
+
+`fs_state` is NeXT's own use of a byte 4.3BSD leaves alone, and A/UX leaves it
+zero. There is nothing to check before mounting and nothing worth writing to
+record one. `fs_cstotal` is stale on the reference volume, still holding the
+two directories `newfs` left behind: A/UX appears to write it back only on
+unmount. The cylinder group summaries are the truth.
+
+## 13. SunOS
+
+SunOS is not A/UX, but it turns up in the same breath and is worth writing
+down. A SunOS 4.1.1 sun3 miniroot reads with no changes at all: same
+`fs_magic`, big-endian, `struct fs` and `struct icommon` at the same offsets,
+16-bit uids, `d_namlen` a 16-bit field, symlinks in a data block. `fs_fsize`
+1024 with `fs_fsbtodb` 1 puts its directories on 512-byte blocks, which the
+rule in §7 already gives.
+
+The cylinder group is where it parts company. SunOS writes the **dynamic**
+layout, `fs_postblformat` = `FS_DYNAMICPOSTBLFMT`:
+
+| | 4.2BSD (NeXT, A/UX) | dynamic (SunOS and later) |
+|---|---|---|
+| `cg_magic` | 980 | 4 |
+| block totals | 84, fixed | at `cg_btotoff` |
+| rotation positions | 212, fixed | at `cg_boff` |
+| inodes used | 724, fixed | at `cg_iusedoff` |
+| free fragments | 984, fixed | at `cg_freeoff` |
+
+`fs_postblformat` sits at superblock offset 1356, but only in the layout that
+has it: in the old one those bytes are rotation table data and could hold
+anything. Read the first cylinder group and see which offset the magic number
+is at. That is the reliable test, it is what this tool does, and it is what
+SunOS's own `cg_chkmagic` does, which accepts either.
+
+The four offsets are read out of each group rather than the superblock,
+because that is where they live. A group states them in this order and they
+must run in it: `cg_btotoff` (84), `cg_boff` (88), `cg_iusedoff` (92),
+`cg_freeoff` (96), `cg_nextfreeoff` (100), the last being where the maps end.
+The block-total array holds `(cg_boff - cg_btotoff) / 4` cylinders and the
+rotation table `fs_nrpos` entries for each of them, so both are sized to the
+group instead of to the 4.2BSD maxima of 32 and 8.
+
+### 13.1 The rotational position of a block
+
+4.3BSD divides a track evenly:
+
+```
+	rpos = bno * NSPF % fs_spc % fs_nsect * NRPOS / fs_nsect
+```
+
+SunOS folds in three fields NeXT does not have, at superblock offsets 132
+(`fs_npsect`, sectors per track including spares), 136 (`fs_interleave`) and
+140 (`fs_trackskew`):
+
+```
+	rpos = (bno * NSPF % fs_spc / fs_nsect * fs_trackskew +
+	        bno * NSPF % fs_spc % fs_nsect * fs_interleave)
+	       % fs_nsect * fs_nrpos / fs_npsect
+```
+
+With no skew, no interleave and no spare sectors that is the 4.3BSD formula
+again. NeXT keeps its `fs_sparecon` at those same offsets, so the longer form
+must only be used on a volume that has the dynamic layout.
+
+### 13.2 The clean flag
+
+Offset 209 is `fs_state` on NeXT and `fs_clean` on SunOS, and they disagree
+about which way it counts. NeXT's 1 is clean; Sun's `FSACTIVE` is 0 and means
+the volume was in use and may not be. Sun's values are 0 `FSACTIVE`,
+1 `FSCLEAN`, 2 `FSSTABLE`.
+
+Sun does not trust that byte on its own. A second word has to hold
+`FSOKAY - fs_time`, where `FSOKAY` is `0x7c269d38`, and a volume whose
+`fs_time` has moved on since is checked whatever the byte says. The word is at
+offset 0 in the 4.2BSD layout, overloading `fs_link` so that an old `fsck`
+still works, and at `fs_sparecon[55]`, offset 1336, in the dynamic one.
+
+### 13.3 Timestamps
+
+Each of the three timestamps is a `struct timeval`, not a bare `time_t`. The
+word after each second holds its microseconds: offsets 20, 28 and 36, which
+4.3BSD calls `ic_atspare`, `ic_mtspare` and `ic_ctspare` and A/UX fills with
+Finder data. Setting a time to a new second and leaving the old fraction
+behind produces a timestamp that never existed, so the fraction is cleared
+whenever the second changes.
+
+### 13.4 What SunOS leaves alone
+
+`di_flags` (100) and the four words at 112-127 are zero on every inode of the
+reference volume. SunOS 4.1's `struct icommon` does name those four,
+`ic_delaylen`, `ic_delayoff`, `ic_nextrio` and `ic_writes`, but they are
+in-core scratch that the kernel clears on the way to disk. So a SunOS volume
+carries no metadata of its own in the fields A/UX uses, and nothing has to be
+preserved through a write beyond what §12 already says.
+
+Solaris 2 is a different filesystem in this respect and is not covered here.
+
+---
+
+## 14. Sources
 
 - NeXT's own headers, in `docs/next-headers/`: `ufs/fs.h`, `ufs/inode.h`,
   `ufs/fsdir.h`, `dev/disk_label.h`, `sys/disktab.h`, `sys/param.h`. Extracted
@@ -550,3 +797,13 @@ Exit status 0 means clean; 8 means it wanted to change something.
 - Linux `fs/ufs/` for the flavour flags and a second opinion on the old layouts.
 - Previous's `src/ditool/` for an independent reader to check against.
 - The two reference volumes, and NeXTSTEP's `fsck` running in Previous.
+- For §12, `AUX_3_1_1GB.dsk`, an A/UX 3.1.1 install, plus Apple's partition map
+  layout as `Inside Macintosh: Devices` documents it. The spare inode fields
+  in §12.3 come from A/UX's own `sys/xstat.h`, `sys/stat.h`, `ufs/inode.h`,
+  `mac/files.h` and `mac/asd.h`, which ship in `/usr/include` on that very
+  volume and are copied to `local-scratch/src/aux-headers/`.
+- For §13, the SunOS 4.1.1 sun3 install miniroot, and SunOS 4.1.4's own
+  `sys/ufs/fs.h`, `sys/ufs/inode.h` and `etc/fsck/`, from the source tree in
+  archive.org item `titor-special_202112`. Everything §13 states about the
+  dynamic cylinder group, `cbtorpos`, the clean flag and the timestamps is
+  from those headers, not inferred from the volume.
