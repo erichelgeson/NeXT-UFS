@@ -34,6 +34,9 @@ No dependencies. The binary lands in `build/nextufs`.
     rm <path>               remove a file
     mv <from> <to>          rename or move
     ln -s <target> <path>   create a symbolic link
+    ln <existing> <path>    create a hard link
+    truncate <path> <size>  set a file's length, padding with zeros
+    putat <host> <path> <n> write a host file into an existing file at offset n
     chmod <mode> <path>     change permissions, octal
     chown <uid>[:<gid>] <p> change owner
 
@@ -49,6 +52,42 @@ Some examples:
 
 Take a copy before writing to a disk you care about, and run `fsck` afterwards.
 
+## Mount it
+
+    make fuse
+    build/nextufs-fuse HD1.hda /mnt/next
+    fusermount3 -u /mnt/next
+
+The image becomes a normal directory: copy files in and out, edit them in
+place, run rsync or tar over it. This is the only part that needs a library
+off your machine, libfuse3, and plain `make` never looks for it.
+
+    -o ro                          mount read-only
+    -o part=b                      pick a partition
+    -o force                       mount a volume that was not cleanly unmounted
+    -o uid=1000,gid=100,umask=022  show every file as yours
+
+Files keep the owner and mode NeXT gave them, and nothing is checked against
+your own user. Add `-o default_permissions` to have the kernel enforce them,
+and `-o allow_other` to let other users in (on NixOS that one needs
+`programs.fuse.userAllowOther = true`).
+
+`mount` and fstab work too:
+
+    mount -t fuse.nextufs-fuse HD1.hda /mnt/next -o part=a
+    /path/HD1.hda  /mnt/next  fuse.nextufs-fuse  part=a,user,noauto  0 0
+
+One program writes an image at a time. The CLI refuses an image that is
+mounted, and a second mount of the same image is refused as well.
+
+A mounted volume is marked dirty until it is unmounted, which is what NeXTSTEP
+itself does. Kill the mount and the mark stays behind: run
+`nextufs HD1.hda fsck -y` before mounting it read-write again, or mount it
+with `-o force`. A crash can also leave `.fuse_hiddenXXXX` files behind, which
+are safe to delete.
+
+Reading a file does not update its access time.
+
 ## What it understands
 
 A NeXT disk starts with a `dlV3` label at sector 0 giving the geometry, the
@@ -61,6 +100,10 @@ Structure layouts came from NeXT's own headers, which are in
 version of this tool.
 
 ## Verification
+
+`tests/fuse.sh` mounts an image and drives the driver through the same ground
+from the other side, then checks the volume the kernel left behind. It skips
+itself where there is no `/dev/fuse`.
 
 `tests/stress.sh <image>` writes files of every interesting size, fills a
 directory past one block, makes and removes trees, and checks consistency at
@@ -86,5 +129,4 @@ compares.
 
 - `fsck` repairs accounting: free maps, summary counters and link counts. It
   reports duplicate or out-of-range blocks rather than trying to fix them.
-- Truncation is to zero only; a file is rewritten rather than shortened.
-- Hard links can be read but not created.
+- Extended attributes are not supported.

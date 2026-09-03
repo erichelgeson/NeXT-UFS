@@ -232,7 +232,8 @@ Magic `0x00011954` at offset 1372 is how you find one.
 **`fs_state` at offset 209 is NeXT-specific.** 4.4BSD has `fs_clean` there.
 Values: 1 clean, 2 dirty, 3 corrupted (mounted while dirty). Both reference
 volumes read 1. Leave a volume at 1 after writing to it, or NeXT will insist on
-checking it.
+checking it. A mount sets 2 for as long as it lasts and puts 1 back when it
+ends, so a volume left behind by a crash is checked before it is used.
 
 `fs_dsize` is the number of fragments available for data, and it is exact:
 
