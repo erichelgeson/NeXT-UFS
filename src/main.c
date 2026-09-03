@@ -29,6 +29,8 @@ usage(void)
 "  mkdir <path>            create a directory\n"
 "  rmdir <path>            remove an empty directory\n"
 "  ln -s <target> <path>   create a symbolic link\n"
+"  truncate <path> <size>  set a file's length, padding with zeros\n"
+"  putat <host> <path> <off>  write a host file into an existing file at <off>\n"
 "  mv <from> <to>          rename or move\n"
 "  chmod <mode> <path>     change permissions (octal)\n"
 "  chown <uid>[:<gid>] <p> change owner\n"
@@ -554,6 +556,41 @@ main(int argc, char **argv)
 			if (put_file(v, argv[i], argv[i + 1], st.st_mode) != 0)
 				die(v, argv[i + 1]);
 		}
+	} else if (strcmp(cmd, "truncate") == 0) {
+		if (i + 1 >= argc)
+			usage();
+		v = openvol(img, part, 1);
+		if (nufs_lookup_nofollow(v, argv[i], &d) != 0)
+			die(v, argv[i]);
+		if (nufs_truncate(v, &d,
+		    (uint64_t)strtoull(argv[i + 1], NULL, 10)) != 0)
+			die(v, argv[i]);
+	} else if (strcmp(cmd, "putat") == 0) {
+		char buf[65536];
+		long long off;
+		FILE *in;
+		size_t got;
+
+		if (i + 2 >= argc)
+			usage();
+		off = strtoll(argv[i + 2], NULL, 10);
+		in = fopen(argv[i], "rb");
+		if (in == NULL) {
+			fprintf(stderr, "%s: %s: %s\n", progname, argv[i],
+			    strerror(errno));
+			exit(1);
+		}
+		v = openvol(img, part, 1);
+		if (nufs_lookup_nofollow(v, argv[i + 1], &d) != 0 &&
+		    nufs_create(v, argv[i + 1], 0644, 0, 0, &d) != 0)
+			die(v, argv[i + 1]);
+		while ((got = fread(buf, 1, sizeof(buf), in)) > 0) {
+			if (nufs_file_write(v, &d, buf, off, (long)got) !=
+			    (long)got)
+				die(v, argv[i + 1]);
+			off += (long long)got;
+		}
+		fclose(in);
 	} else if (strcmp(cmd, "mv") == 0) {
 		if (i + 1 >= argc)
 			usage();

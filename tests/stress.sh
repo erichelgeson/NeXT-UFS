@@ -51,6 +51,51 @@ for f in "$W"/src/*; do
 done
 echo "ok    all files read back identical"
 
+# --- truncate, growth and sparse writes ---------------------------------
+mkdir -p "$W/mir"
+for n in f1 f1025 f8193 f200000 fbig; do cp "$W/src/$n" "$W/mir/$n"; done
+
+same() {			# compare one file in the image to its mirror
+	if ! "$NEXTUFS" "$IMG" cat "/$1" | cmp -s - "$W/mir/$1"; then
+		echo "FAIL  content differs for $1"
+		fail=1
+	fi
+}
+
+trunc() {			# truncate <name> <size>, mirrored on the host
+	"$NEXTUFS" "$IMG" truncate "/$1" "$2" || { echo "FAIL  truncate $1 $2"; fail=1; }
+	truncate -s "$2" "$W/mir/$1"
+	same "$1"
+}
+
+putat() {			# putat <name> <hostfile> <offset>, mirrored
+	"$NEXTUFS" "$IMG" putat "$2" "/$1" "$3" || { echo "FAIL  putat $1 $3"; fail=1; }
+	dd if="$2" of="$W/mir/$1" bs=1 seek="$3" conv=notrunc status=none
+	same "$1"
+}
+
+trunc fbig 5000				# drops a double indirect tree
+trunc f200000 100000			# back into the first indirect block
+trunc f8193 3000			# a full tail block becomes a short one
+trunc f1025 1024
+trunc f1025 0
+check "after shrinking files"
+
+trunc f1 9000				# a short tail grows past its block
+trunc f1 200000				# and into the indirect blocks
+check "after growing files"
+
+: > "$W/mir/sp1"; : > "$W/mir/sp2"; : > "$W/mir/sp3"
+putat sp1 "$W/src/f1024" 100000		# a file that is all hole up to 100000
+putat sp1 "$W/src/f1023" 50100		# a partial chunk inside a hole
+head -c 100 /dev/urandom > "$W/mir/sp2"
+"$NEXTUFS" "$IMG" put "$W/mir/sp2" /sp2
+putat sp2 "$W/src/f1024" 5000		# past the short tail, same block
+head -c 100 /dev/urandom > "$W/mir/sp3"
+"$NEXTUFS" "$IMG" put "$W/mir/sp3" /sp3
+putat sp3 "$W/src/f1024" 20000		# past the short tail, a later block
+check "after sparse writes"
+
 # --- directories --------------------------------------------------------
 "$NEXTUFS" "$IMG" mkdir /a
 "$NEXTUFS" "$IMG" mkdir /a/b
@@ -110,6 +155,9 @@ check "after removing 200 entries"
 
 for f in "$W"/src/*; do
 	"$NEXTUFS" "$IMG" rm "/$(basename "$f")"
+done
+for n in sp1 sp2 sp3; do
+	"$NEXTUFS" "$IMG" rm "/$n"
 done
 check "after removing every file"
 
