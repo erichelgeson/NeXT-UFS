@@ -139,6 +139,43 @@ check "after mv, chmod and chown"
 [ "$("$NEXTUFS" "$IMG" stat /tree/moved | awk '/^owner/{print $2}')" = 20:20 ] || \
 	{ echo "FAIL chown"; fail=1; }
 
+# --- rename replacing an existing target, and hard links -----------------
+"$NEXTUFS" "$IMG" mkdir /rn
+"$NEXTUFS" "$IMG" put "$W/src/f1024" /rn/one
+"$NEXTUFS" "$IMG" put "$W/src/f1025" /rn/two
+"$NEXTUFS" "$IMG" mv /rn/one /rn/two			# file over file
+"$NEXTUFS" "$IMG" cat /rn/two | cmp -s - "$W/src/f1024" || \
+	{ echo "FAIL  mv over a file kept the wrong contents"; fail=1; }
+"$NEXTUFS" "$IMG" mkdir /rn/d1
+"$NEXTUFS" "$IMG" mkdir /rn/d2
+"$NEXTUFS" "$IMG" mv /rn/d1 /rn/d2			# dir over empty dir
+"$NEXTUFS" "$IMG" mkdir /rn/d3
+"$NEXTUFS" "$IMG" put "$W/src/f1" /rn/d3/keep
+"$NEXTUFS" "$IMG" mv /rn/d2 /rn/d3 2>/dev/null && \
+	{ echo "FAIL  mv over a non-empty directory succeeded"; fail=1; }
+"$NEXTUFS" "$IMG" mv /rn/d2 /rn/d2/inside 2>/dev/null && \
+	{ echo "FAIL  mv of a directory into itself succeeded"; fail=1; }
+"$NEXTUFS" "$IMG" mv /rn/two /rn/d3 2>/dev/null && \
+	{ echo "FAIL  mv of a file over a directory succeeded"; fail=1; }
+"$NEXTUFS" "$IMG" mv /rn/d3 /rn/two 2>/dev/null && \
+	{ echo "FAIL  mv of a directory over a file succeeded"; fail=1; }
+check "after renames that replace the target"
+
+"$NEXTUFS" "$IMG" ln /rn/two /rn/link
+[ "$("$NEXTUFS" "$IMG" stat /rn/link | awk '/^links/{print $2}')" = 2 ] || \
+	{ echo "FAIL  hard link count is not 2"; fail=1; }
+"$NEXTUFS" "$IMG" rm /rn/two
+"$NEXTUFS" "$IMG" cat /rn/link | cmp -s - "$W/src/f1024" || \
+	{ echo "FAIL  hard link lost its contents"; fail=1; }
+check "after a hard link"
+
+"$NEXTUFS" "$IMG" rm /rn/link
+"$NEXTUFS" "$IMG" rm /rn/d3/keep
+"$NEXTUFS" "$IMG" rmdir /rn/d3
+"$NEXTUFS" "$IMG" rmdir /rn/d2
+"$NEXTUFS" "$IMG" rmdir /rn
+check "after removing the rename tree"
+
 "$NEXTUFS" "$IMG" rm /tree/moved
 "$NEXTUFS" "$IMG" rm /tree-renamed/b/lnk
 "$NEXTUFS" "$IMG" rm /tree-renamed/b/small

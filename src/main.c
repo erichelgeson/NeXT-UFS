@@ -29,6 +29,7 @@ usage(void)
 "  mkdir <path>            create a directory\n"
 "  rmdir <path>            remove an empty directory\n"
 "  ln -s <target> <path>   create a symbolic link\n"
+"  ln <existing> <path>    create a hard link\n"
 "  truncate <path> <size>  set a file's length, padding with zeros\n"
 "  putat <host> <path> <off>  write a host file into an existing file at <off>\n"
 "  mv <from> <to>          rename or move\n"
@@ -595,7 +596,7 @@ main(int argc, char **argv)
 		if (i + 1 >= argc)
 			usage();
 		v = openvol(img, part, 1);
-		if (nufs_rename(v, argv[i], argv[i + 1]) != 0)
+		if (nufs_rename(v, argv[i], argv[i + 1], 0) != 0)
 			die(v, argv[i]);
 	} else if (strcmp(cmd, "chmod") == 0) {
 		if (i + 1 >= argc)
@@ -635,11 +636,19 @@ main(int argc, char **argv)
 		if (nufs_rmdir(v, argv[i]) != 0)
 			die(v, argv[i]);
 	} else if (strcmp(cmd, "ln") == 0) {
-		if (i + 2 >= argc || strcmp(argv[i], "-s") != 0)
-			usage();
-		v = openvol(img, part, 1);
-		if (nufs_symlink(v, argv[i + 1], argv[i + 2], 0, 0) != 0)
-			die(v, argv[i + 2]);
+		if (i < argc && strcmp(argv[i], "-s") == 0) {
+			if (i + 2 >= argc)
+				usage();
+			v = openvol(img, part, 1);
+			if (nufs_symlink(v, argv[i + 1], argv[i + 2], 0, 0) != 0)
+				die(v, argv[i + 2]);
+		} else {
+			if (i + 1 >= argc)
+				usage();
+			v = openvol(img, part, 1);
+			if (nufs_link(v, argv[i], argv[i + 1]) != 0)
+				die(v, argv[i + 1]);
+		}
 	} else
 		usage();
 

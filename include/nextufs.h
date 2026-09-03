@@ -332,7 +332,13 @@ int	nufs_symlink(struct nufs *, const char *target, const char *path,
 	    uint16_t uid, uint16_t gid);
 int	nufs_unlink(struct nufs *, const char *path);
 int	nufs_rmdir(struct nufs *, const char *path);
-int	nufs_rename(struct nufs *, const char *from, const char *to);
+int	nufs_rename(struct nufs *, const char *from, const char *to, int flags);
+#define NUFS_RENAME_NOREPLACE	1
+int	nufs_link(struct nufs *, const char *existing, const char *newpath);
+int	nufs_utimes(struct nufs *, const char *path, const uint32_t *atime,
+	    const uint32_t *mtime);
+int	nufs_mknod(struct nufs *, const char *path, uint16_t mode,
+	    uint16_t uid, uint16_t gid, uint32_t rdev, struct nufs_dinode *out);
 int	nufs_chmod(struct nufs *, const char *path, uint16_t mode);
 int	nufs_chown(struct nufs *, const char *path, uint16_t uid, uint16_t gid);
 
